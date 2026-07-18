@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>解剖 AR — 女性全臓器（皮膚・筋肉なし）</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:sans-serif}
+    #log{position:fixed;top:8px;left:8px;right:8px;max-height:38vh;overflow:auto;color:#7CFC00;
+         background:rgba(0,0,0,.55);font:13px/1.4 monospace;white-space:pre-wrap;padding:8px;border-radius:6px;z-index:10}
+    #btn{position:fixed;left:50%;bottom:6%;transform:translateX(-50%);z-index:30;font:bold 34px sans-serif;
+         padding:24px 52px;background:#1060ff;color:#fff;border:none;border-radius:18px;box-shadow:0 6px 24px rgba(0,0,0,.6)}
+    #cred{position:fixed;bottom:2px;right:6px;color:#888;font:10px monospace;z-index:5}
+  </style>
+</head>
+<body>
+  <div id="log">解剖 AR ローダー（女性・全臓器）</div>
+  <button id="btn" disabled>読み込み中…</button>
+  <div id="cred">Model: HuBMAP/HRA VH_Female — CC BY 4.0</div>
+  <script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+  <script type="module">
+    const logEl=document.getElementById('log'), btn=document.getElementById('btn');
+    const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
+    log("boot "+navigator.userAgent.slice(0,50));
+    addEventListener('error', e=>log('JSERR: '+(e.message||e)));
+    addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
+
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    log("three r"+THREE.REVISION+" import OK");
+    if('xr' in navigator) navigator.xr.isSessionSupported('immersive-ar').then(s=>log("immersive-ar supported: "+s));
+
+    const renderer=new THREE.WebGLRenderer({antialias:false, alpha:true});
+    renderer.setClearColor(0x000000,0);
+    renderer.setSize(innerWidth,innerHeight);
+    renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local');
+    document.body.appendChild(renderer.domElement);
+    const scene=new THREE.Scene();
+    const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.01,50);
+    scene.add(new THREE.HemisphereLight(0xffffff,0x223344,2.5));
+    const dir=new THREE.DirectionalLight(0xffffff,2.0); dir.position.set(1,2,1); scene.add(dir);
+
+    const root=new THREE.Group(); scene.add(root);   // 回転・配置用の親
+
+    // === 掴む(片手=移動+回転) / 両手=拡大縮小 ===
+    const ctrls=[renderer.xr.getController(0), renderer.xr.getController(1)];
+    ctrls.forEach(c=>{ c.userData.sel=false; scene.add(c); });
+    let grabber=null, scaling=false, scaleStart={dist:1, scale:1};
+    function onStart(e){
+      const c=e.target; c.userData.sel=true;
+      if(!grabber){ grabber=c; c.attach(root); log('掴んだ'); }
+      else if(c!==grabber){ scaling=true; scaleStart.dist=Math.max(1e-4, grabber.position.distanceTo(c.position)); scaleStart.scale=root.scale.x; log('拡大縮小 開始'); }
+    }
+    function onEnd(e){
+      const c=e.target; c.userData.sel=false;
+      if(c===grabber){
+        scene.attach(root); grabber=null; scaling=false; log('離した');
+        const o=ctrls.find(x=>x.userData.sel); if(o){ grabber=o; o.attach(root); }
+      } else if(scaling){ scaling=false; log('拡大縮小 終了'); }
+    }
+    ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
+    function updateScale(){
+      if(scaling && grabber){
+        const o=ctrls.find(c=>c!==grabber && c.userData.sel);
+        if(o){ const f=grabber.position.distanceTo(o.position)/scaleStart.dist;
+               root.scale.setScalar(Math.min(8, Math.max(0.05, scaleStart.scale*f))); }
+      }
+    }
+
+    const draco=new DRACOLoader();
+    draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+    const loader=new GLTFLoader(); loader.setDRACOLoader(draco);
+
+    const GLB='vendor/anatomy.glb?v=3';   // 相対パス（GitHub Pagesサブパス対応）。再変換時にvを上げる
+    log("GLB 読み込み開始 "+GLB);
+    let _dlPct=-1;
+    loader.load(GLB,
+      (gltf)=>{
+        const model=gltf.scene;
+        let tris=0, meshes=0;
+        model.traverse(o=>{
+          if(o.isMesh){
+            meshes++;
+            const g=o.geometry; tris += g.index? g.index.count/3 : (g.attributes.position? g.attributes.position.count/3:0);
+            // 加算表示で見えるよう自発光ブースト＋両面
+            const mats=Array.isArray(o.material)?o.material:[o.material];
+            for(const mt of mats){ if(mt){ mt.emissive=mt.color? mt.color.clone():new THREE.Color(0x888888); mt.emissiveIntensity=0.35; mt.side=THREE.DoubleSide; mt.metalness=0.0; mt.roughness=0.9; } }
+          }
+        });
+        // 自動フィット: 高さ0.7mへスケール→正面0.9m・目線やや下に配置
+        const box=new THREE.Box3().setFromObject(model);
+        const size=new THREE.Vector3(), center=new THREE.Vector3();
+        box.getSize(size); box.getCenter(center);
+        const h=Math.max(size.x,size.y,size.z)||1;
+        const s=0.7/h; model.scale.setScalar(s);
+        model.position.sub(center.multiplyScalar(s));   // 原点中心化
+        root.add(model);
+        // local座標は原点=頭の位置。目線やや下・正面0.8mに配置
+        root.position.set(0, -0.1, -0.8);
+        log(`✓ GLB読込完了 meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
+        btn.disabled=false; btn.textContent='▶ ENTER AR';
+      },
+      (ev)=>{ if(ev.total){ const p=Math.round(ev.loaded/ev.total*100); if(p>=_dlPct+25||p===100){ _dlPct=p; log('DL '+p+'%'); } } },
+      (err)=>{ log('✗ GLB読込エラー: '+(err.message||err)); }
+    );
+
+    let frames=0;
+    renderer.setAnimationLoop(()=>{
+      try{
+        updateScale();                   // 両手ピンチで拡大縮小
+        renderer.render(scene,camera);   // 自動回転は廃止（手で掴んで回す）
+        if(renderer.xr.isPresenting){
+          if(frames===0) log("✓ AR初フレーム描画");
+          if(frames>0 && frames%300===0) log("AR描画中 frame="+frames);
+          frames++;
+        }
+      }catch(err){ log("RENDER ERR: "+(err.message||err)); }
+    });
+
+    btn.addEventListener('click', async ()=>{
+      btn.disabled=true; btn.textContent='AR起動中…';
+      try{
+        const s=await navigator.xr.requestSession('immersive-ar',{requiredFeatures:['local'], optionalFeatures:['hand-tracking']});
+        await renderer.xr.setSession(s);
+        log("✓ setSession完了（AR内にモデル）");
+        s.addEventListener('end',()=>{log("session終了 frames="+frames);btn.disabled=false;btn.textContent='▶ ENTER AR';});
+        btn.style.display='none';
+      }catch(e){ log("✗ AR起動エラー: "+(e.name||'')+": "+(e.message||e)); btn.disabled=false; btn.textContent='▶ 再試行'; }
+    });
+  </script>
+</body>
+</html>
