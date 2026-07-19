@@ -48,53 +48,59 @@
 
     const root=new THREE.Group(); scene.add(root);   // 回転・配置用の親
 
-    // === 操作: 片手=移動(＋手首の傾け) / 両手=ターンテーブル回転＋拡大縮小＋移動 ===
-    //   背中側を見るには「両手でつまんで、両手を回す」＝モデルがY軸で回る(180°超も連続)。
-    //   回転ゲイン: 手の回転角×ROT_GAIN でモデルが回る(手60°→モデル180°)。背面に届きやすく。
+    // === 操作: 片手=平行移動のみ(回転しない) / 両手=回転＋拡大縮小＋移動 ===
+    //   重要: 片手はアタッチ(reparent)しない＝手首の傾きを拾わない。これで持ち替えても
+    //   モデルの向きが保たれ、両手回転を継続できる(=つまみ直しで明後日に回る不具合の根治)。
+    //   回転ゲイン: 手の回転角×ROT_GAIN(手60°→モデル180°)。背面に届きやすく。
     const ROT_GAIN=3;
     const ctrls=[renderer.xr.getController(0), renderer.xr.getController(1)];
     ctrls.forEach(c=>{ c.userData.sel=false; scene.add(c); });
-    let oneGrab=null;   // 片手アタッチ中のコントローラ
-    let two=null;       // 両手操作の基準値
+    let one=null, two=null;   // 片手/両手の基準値(rootは常にsceneの子・reparentしない)
     const yawOf=(a,b)=>Math.atan2(b.position.x-a.position.x, b.position.z-a.position.z);
     const midOf=(a,b)=>a.position.clone().add(b.position).multiplyScalar(0.5);
 
+    function enterOne(c){   // 基準を都度取り直す＝持ち替えでもジャンプしない
+      two=null;
+      one={ c, handStart:c.position.clone(), posStart:root.position.clone() };
+      log('片手: 移動');
+    }
     function enterTwo(a,b){
-      if(oneGrab){ scene.attach(root); oneGrab=null; }   // 片手アタッチ解除(world変換は維持)
+      one=null;
       two={ dist0:Math.max(1e-4,a.position.distanceTo(b.position)), scale0:root.scale.x,
             prevYaw:yawOf(a,b), accum:0, rootYaw0:root.rotation.y,
             mid0:midOf(a,b), pos0:root.position.clone() };
       log('両手: 回転＋拡大縮小');
     }
-    function enterOne(c){
-      two=null;
-      if(oneGrab!==c){ if(oneGrab) scene.attach(root); oneGrab=c; c.attach(root); log('片手: 移動'); }
-    }
     function refresh(){
       const sel=ctrls.filter(c=>c.userData.sel);
       if(sel.length>=2){ if(!two) enterTwo(sel[0],sel[1]); }
       else if(sel.length===1){ enterOne(sel[0]); }
-      else { if(oneGrab){ scene.attach(root); oneGrab=null; } two=null; log('離した'); }
+      else { one=null; two=null; log('離した'); }
     }
     const onStart=(e)=>{ e.target.userData.sel=true; refresh(); };
     const onEnd  =(e)=>{ e.target.userData.sel=false; refresh(); };
     ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
 
     function updateManip(){
-      if(!two) return;
-      const sel=ctrls.filter(c=>c.userData.sel);
-      if(sel.length<2) return;
-      const a=sel[0], b=sel[1];
-      const dist=Math.max(1e-4, a.position.distanceTo(b.position));
-      // 拡大縮小(両手の距離)
-      root.scale.setScalar(Math.min(8, Math.max(0.05, two.scale0 * dist/two.dist0)));
-      // 回転(両手の角度・±πの折返しをアンラップして連続化)
-      const yaw=yawOf(a,b);
-      let d=yaw-two.prevYaw; if(d>Math.PI)d-=2*Math.PI; else if(d<-Math.PI)d+=2*Math.PI;
-      two.accum+=d*ROT_GAIN; two.prevYaw=yaw;   // ゲインで増幅＝少ない手の回転で背面まで
-      root.rotation.y=two.rootYaw0+two.accum;
-      // 移動(両手の中点)
-      root.position.copy(two.pos0).add(midOf(a,b).sub(two.mid0));
+      if(two){
+        const sel=ctrls.filter(c=>c.userData.sel);
+        if(sel.length<2) return;
+        const a=sel[0], b=sel[1];
+        const dist=Math.max(1e-4, a.position.distanceTo(b.position));
+        // 拡大縮小(両手の距離)
+        root.scale.setScalar(Math.min(8, Math.max(0.05, two.scale0 * dist/two.dist0)));
+        // 回転(両手の角度・±π折返しをアンラップ＋ゲイン増幅)
+        const yaw=yawOf(a,b);
+        let d=yaw-two.prevYaw; if(d>Math.PI)d-=2*Math.PI; else if(d<-Math.PI)d+=2*Math.PI;
+        two.accum+=d*ROT_GAIN; two.prevYaw=yaw;
+        root.rotation.y=two.rootYaw0+two.accum;
+        // 移動(両手の中点)
+        root.position.copy(two.pos0).add(midOf(a,b).sub(two.mid0));
+      } else if(one){
+        if(!one.c.userData.sel){ one=null; return; }
+        // 平行移動のみ(向き・大きさは不変)
+        root.position.copy(one.posStart).add(one.c.position.clone().sub(one.handStart));
+      }
     }
 
     const draco=new DRACOLoader();
