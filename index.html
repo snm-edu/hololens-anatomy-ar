@@ -48,29 +48,51 @@
 
     const root=new THREE.Group(); scene.add(root);   // 回転・配置用の親
 
-    // === 掴む(片手=移動+回転) / 両手=拡大縮小 ===
+    // === 操作: 片手=移動(＋手首の傾け) / 両手=ターンテーブル回転＋拡大縮小＋移動 ===
+    //   背中側を見るには「両手でつまんで、両手を回す」＝モデルがY軸で回る(180°超も連続)。
     const ctrls=[renderer.xr.getController(0), renderer.xr.getController(1)];
     ctrls.forEach(c=>{ c.userData.sel=false; scene.add(c); });
-    let grabber=null, scaling=false, scaleStart={dist:1, scale:1};
-    function onStart(e){
-      const c=e.target; c.userData.sel=true;
-      if(!grabber){ grabber=c; c.attach(root); log('掴んだ'); }
-      else if(c!==grabber){ scaling=true; scaleStart.dist=Math.max(1e-4, grabber.position.distanceTo(c.position)); scaleStart.scale=root.scale.x; log('拡大縮小 開始'); }
+    let oneGrab=null;   // 片手アタッチ中のコントローラ
+    let two=null;       // 両手操作の基準値
+    const yawOf=(a,b)=>Math.atan2(b.position.x-a.position.x, b.position.z-a.position.z);
+    const midOf=(a,b)=>a.position.clone().add(b.position).multiplyScalar(0.5);
+
+    function enterTwo(a,b){
+      if(oneGrab){ scene.attach(root); oneGrab=null; }   // 片手アタッチ解除(world変換は維持)
+      two={ dist0:Math.max(1e-4,a.position.distanceTo(b.position)), scale0:root.scale.x,
+            prevYaw:yawOf(a,b), accum:0, rootYaw0:root.rotation.y,
+            mid0:midOf(a,b), pos0:root.position.clone() };
+      log('両手: 回転＋拡大縮小');
     }
-    function onEnd(e){
-      const c=e.target; c.userData.sel=false;
-      if(c===grabber){
-        scene.attach(root); grabber=null; scaling=false; log('離した');
-        const o=ctrls.find(x=>x.userData.sel); if(o){ grabber=o; o.attach(root); }
-      } else if(scaling){ scaling=false; log('拡大縮小 終了'); }
+    function enterOne(c){
+      two=null;
+      if(oneGrab!==c){ if(oneGrab) scene.attach(root); oneGrab=c; c.attach(root); log('片手: 移動'); }
     }
+    function refresh(){
+      const sel=ctrls.filter(c=>c.userData.sel);
+      if(sel.length>=2){ if(!two) enterTwo(sel[0],sel[1]); }
+      else if(sel.length===1){ enterOne(sel[0]); }
+      else { if(oneGrab){ scene.attach(root); oneGrab=null; } two=null; log('離した'); }
+    }
+    const onStart=(e)=>{ e.target.userData.sel=true; refresh(); };
+    const onEnd  =(e)=>{ e.target.userData.sel=false; refresh(); };
     ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
-    function updateScale(){
-      if(scaling && grabber){
-        const o=ctrls.find(c=>c!==grabber && c.userData.sel);
-        if(o){ const f=grabber.position.distanceTo(o.position)/scaleStart.dist;
-               root.scale.setScalar(Math.min(8, Math.max(0.05, scaleStart.scale*f))); }
-      }
+
+    function updateManip(){
+      if(!two) return;
+      const sel=ctrls.filter(c=>c.userData.sel);
+      if(sel.length<2) return;
+      const a=sel[0], b=sel[1];
+      const dist=Math.max(1e-4, a.position.distanceTo(b.position));
+      // 拡大縮小(両手の距離)
+      root.scale.setScalar(Math.min(8, Math.max(0.05, two.scale0 * dist/two.dist0)));
+      // 回転(両手の角度・±πの折返しをアンラップして連続化)
+      const yaw=yawOf(a,b);
+      let d=yaw-two.prevYaw; if(d>Math.PI)d-=2*Math.PI; else if(d<-Math.PI)d+=2*Math.PI;
+      two.accum+=d; two.prevYaw=yaw;
+      root.rotation.y=two.rootYaw0+two.accum;
+      // 移動(両手の中点)
+      root.position.copy(two.pos0).add(midOf(a,b).sub(two.mid0));
     }
 
     const draco=new DRACOLoader();
@@ -111,6 +133,7 @@
         // local座標は原点=頭の位置。目線やや下・正面0.8mに配置
         root.position.set(0, -0.1, -0.8);
         log(`✓ GLB読込完了 meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
+        log('操作: 片手=移動 ／ 両手でつまんで回すと回転(背面も)・広げると拡大');
         btn.disabled=false; btn.textContent='▶ ENTER AR';
       },
       (ev)=>{ if(ev.total){ const p=Math.round(ev.loaded/ev.total*100); if(p>=_dlPct+25||p===100){ _dlPct=p; log('DL '+p+'%'); } } },
@@ -120,7 +143,7 @@
     let frames=0;
     renderer.setAnimationLoop(()=>{
       try{
-        updateScale();                   // 両手ピンチで拡大縮小
+        updateManip();                   // 両手=回転＋拡大縮小＋移動
         renderer.render(scene,camera);   // 自動回転は廃止（手で掴んで回す）
         if(renderer.xr.isPresenting){
           if(frames===0) log("✓ AR初フレーム描画");
