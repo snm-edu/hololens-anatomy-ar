@@ -65,9 +65,10 @@
       transform:translateX(-50%); font-size:12px; color:var(--sub); background:var(--panel);
       border:1px solid var(--line); border-radius:20px; padding:8px 14px; text-align:center; }
     .fadeout{ opacity:0; transition:opacity .5s; pointer-events:none; }
-    #share{ position:fixed; z-index:22; left:12px; right:12px; top:calc(env(safe-area-inset-top) + 60px);
-      max-width:420px; margin:0 auto; background:var(--panel); border:1px solid var(--line);
-      border-radius:16px; padding:14px; display:none; }
+    /* モデルに被らないよう右上に寄せる（中央だと本体が見えなくなる） */
+    #share{ position:fixed; z-index:22; right:12px; left:auto; top:calc(env(safe-area-inset-top) + 96px);
+      width:min(92vw,360px); background:var(--panel); border:1px solid var(--line);
+      border-radius:16px; padding:14px; display:none; box-shadow:0 8px 32px rgba(0,0,0,.5); }
     #share.show{ display:block; }
     #share .hd{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
     #share .hd b{ font-size:15px; } #share .hd .st{ margin-left:auto; font-size:12px; color:var(--sub); }
@@ -508,7 +509,9 @@
       room = createRoom({
         url: RP.url, room: c,
         onStatus: setStatus,
-        onRole: (isP) => { setFollower(!isP); setStatus(room && room.isConnected() ? 'open' : 'connecting'); },
+        // 誰も操作権を持っていない間は全員が自由に動かせる（1台だけで入室したときに固まらない）。
+        // 先に動かした人が中継側で自動的に操作権を得る。
+        onRole: (isP, pid) => { setFollower(!!pid && !isP); setStatus(room && room.isConnected() ? 'open' : 'connecting'); },
         onPose: (d) => { wantPose = d; },
         onState: (d) => { try { applyState(d); } catch(e){} },
       });
@@ -523,8 +526,15 @@
       shareEl.classList.toggle('show');
       if (!roomCode.value) roomCode.value = RP.room || newCode();
     });
-    document.getElementById('joinBtn').addEventListener('click', () => join(roomCode.value));
-    document.getElementById('claimBtn').addEventListener('click', () => { if (room) room.claim(); });
+    // 参加・操作権取得のあとはパネルを閉じる（開いたままだとモデルが隠れて見えない）
+    document.getElementById('joinBtn').addEventListener('click', () => { join(roomCode.value); shareEl.classList.remove('show'); });
+    document.getElementById('claimBtn').addEventListener('click', () => { if (room) room.claim(); shareEl.classList.remove('show'); });
+    // パネルの外側をタップしても閉じる
+    addEventListener('pointerdown', (e) => {
+      if (!shareEl.classList.contains('show')) return;
+      if (shareEl.contains(e.target) || e.target.closest('#shareBtn')) return;
+      shareEl.classList.remove('show');
+    }, true);
     document.getElementById('leaveBtn').addEventListener('click', () => {
       if (room){ room.close(); room = null; }
       setFollower(false); wantPose = null; pill.classList.remove('show'); shareEl.classList.remove('show');
@@ -563,7 +573,7 @@
         if (!wantPose) return;
         VS.applyOrbit({ camera, controls, model:modelObj, centerWorld, radiusWorld }, wantPose, 0.25);
         showPointer(wantPose.p || null);
-      } else if (room.isPresenter()){
+      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
         const now = performance.now();
         const h = stateHash();
         if (h !== lastStateHash && now - lastStateSent >= 250){   // 表示状態は最大4Hz

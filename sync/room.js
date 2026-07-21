@@ -47,10 +47,10 @@ export function createRoom(opts) {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.k === 'hello') {
         myId = m.id; presenterId = m.presenter || null;
-        try { onRole && onRole(isPresenter()); } catch {}
+        try { onRole && onRole(isPresenter(), presenterId); } catch {}
       } else if (m.k === 'role') {
         presenterId = m.presenter || null;
-        try { onRole && onRole(isPresenter()); } catch {}
+        try { onRole && onRole(isPresenter(), presenterId); } catch {}
       } else if (m.k === 'pose') {
         if (!isPresenter()) { try { onPose && onPose(m.d); } catch {} }
       } else if (m.k === 'state') {

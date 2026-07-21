@@ -214,7 +214,7 @@
         if(!wantPose) return;
         VS.applyTurntable({root, camWorld:camWorld()}, wantPose, 0.2);
         showPointer(wantPose.p||null);
-      } else if(room.isPresenter()){
+      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
         const now=performance.now();
         if(now-lastSent<83) return;   // 12Hz
         lastSent=now;
@@ -228,7 +228,10 @@
     if(RP.enabled && RP.room){
       room=createRoom({ url:RP.url, room:RP.room,
         onStatus:(s)=>log('共有ルーム['+RP.room+']: '+s),
-        onRole:(isP)=>{ follower=!isP; log(follower?'参加者モード（先生の操作に同期／片手で置き場所だけ移動可）':'操作モード（あなたの操作が全員に届きます）'); },
+        // 誰も操作権を持っていない間は自分で自由に回せる（1台だけで入室したときに固まらない）
+        onRole:(isP,pid)=>{ follower=!!pid && !isP;
+          log(follower?'参加者モード（先生の操作に同期／片手で置き場所だけ移動可）'
+                      :'自由操作モード（両手で回転・拡縮できます。動かすとあなたが操作権を持ちます）'); },
         onPose:(d)=>{ wantPose=d; },
         onState:(d)=>{ try{ applyState(d); }catch(e){ log('state適用エラー: '+(e.message||e)); } } });
       if(RP.role==='presenter') room.claim();
