@@ -379,10 +379,26 @@
       activePointers = Math.max(0, activePointers-1);
       if (wasSingle){
         const mv = Math.hypot(e.clientX-down.x, e.clientY-down.y), dt = performance.now()-down.t;
-        if (mv < 12 && dt < 500) pick(e.clientX, e.clientY);
+        if (mv < 12 && dt < 500){
+          const now = performance.now();
+          // ダブルタップで元に戻す（拡大・回転をやり直したいときの逃げ道）
+          if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 40){
+            lastTap = null; closeSel(); resetPose();
+          } else {
+            lastTap = { x:e.clientX, y:e.clientY, t:now };
+            pick(e.clientX, e.clientY);
+          }
+        }
       }
       down = null;
     });
+    let lastTap = null;
+    // 表示モードごとに「元の見え方」へ戻す
+    function resetPose(){
+      if (markerMode){ placeOnMarker(); }              // マーカー上の既定の大きさ・向きへ
+      else if (arMode){ root.scale.setScalar(1); root.quaternion.identity(); recenter(); }
+      else { root.scale.setScalar(1); root.quaternion.identity(); goHome(); }
+    }
     function pick(cx, cy){
       if (!root.visible) return;   // マーカー未検出で模型が出ていないときは選択させない
       const r = canvas.getBoundingClientRect();
@@ -467,7 +483,7 @@
     });
     function resetView(){
       searchBox.value=''; searchCount.textContent='';
-      restoreDefault(); closeSel(); goHome();
+      restoreDefault(); closeSel(); resetPose();   // AR中でも大きさ・向きを既定へ戻す
       dissect = false; dissectBtn.classList.remove('acc'); dissectBtn.textContent = '✂ 解剖';
     }
     document.getElementById('resetBtn').addEventListener('click', resetView);
@@ -536,6 +552,7 @@
     // 検出解像度を上げると範囲と安定性が稼げるが、その分CPUを使う。
     const AR_RES_W = Math.max(320, parseInt(_q.get('arres')) || 1280);
     let markerMode = false, arCtx = null, arMarker = null, arjsLoading = null;
+    let arVideoSize = '-', arFrames = 0, arHits = 0;   // 遠隔で切り分けるための診断値
     const markerBtn = document.getElementById('markerBtn');
 
     function loadArjs(){
@@ -560,14 +577,30 @@
       root.quaternion.identity();
     }
 
+    async function waitVideoReady(ms = 5000){
+      const t0 = performance.now();
+      while (!camEl.videoWidth && performance.now() - t0 < ms){
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return !!camEl.videoWidth;
+    }
+
     async function enterMarker(){
       try { await loadArjs(); }
       catch(e){ alert(e.message); return; }
+      if (!(await waitVideoReady())){
+        alert('カメラ映像が取得できていません。先に「📷 現実に重ねる」でカメラを起動してください。');
+        return;
+      }
+      // 🔥解析キャンバスは実際の映像と同じ縦横比にすること。
+      //   16:9の映像を4:3のキャンバスへ流すと正方形のマーカーが長方形に潰れて検出できない。
+      const vw = camEl.videoWidth, vh = camEl.videoHeight;
+      arVideoSize = vw + '×' + vh;
       arCtx = new THREEx.ArToolkitContext({
         cameraParametersUrl: './vendor/arjs/camera_para.dat',
         detectionMode: 'mono',
         maxDetectionRate: 30,
-        canvasWidth: AR_RES_W, canvasHeight: Math.round(AR_RES_W * 3 / 4),
+        canvasWidth: AR_RES_W, canvasHeight: Math.round(AR_RES_W * vh / vw),
       });
       await new Promise((res) => arCtx.init(res));
       // ⚠️これを忘れると背景映像と模型の遠近が合わずマーカーからずれて見える
@@ -584,11 +617,8 @@
       // markerTick が早期 return する間ずっと既定の visible=true のまま出てしまう。
       root.visible = false;
       document.body.classList.add('marker-lost');
-      // 実機で設定値を確認できるように出す（印刷実寸と食い違うと大きさも距離も狂うため）
-      document.getElementById('markerMsg').innerHTML =
-        'マーカーを映してください<br><span style="font-weight:400;font-size:12px;opacity:.75">' +
-        `マーカー ${(MARKER_SIZE_M*100).toFixed(0)}cm ／ 模型 ${(MODEL_ON_MARKER_M*100).toFixed(0)}cm ` +
-        `／ 検出 ${AR_RES_W}px</span>`;
+      arFrames = 0; arHits = 0;
+      updateMarkerMsg();
       markerBtn.classList.add('acc');
     }
 
@@ -608,12 +638,26 @@
       let seen = false;
       if (arCtx && camEl.videoWidth){
         try {
+          arFrames++;
           arCtx.update(camEl);
           seen = !!(arMarker && arMarker.object3d && arMarker.object3d.visible);
+          if (seen) arHits++;
         } catch(e){ seen = false; }
       }
       root.visible = seen;
       document.body.classList.toggle('marker-lost', !seen);
+      if (!seen && arFrames % 15 === 0) updateMarkerMsg();   // 診断値を時々更新
+    }
+
+    // 認識しないとき、原因を遠隔で切り分けるための表示
+    function updateMarkerMsg(){
+      const c = arCtx && arCtx.parameters;
+      document.getElementById('markerMsg').innerHTML =
+        'マーカーを映してください' +
+        '<br><span style="font-weight:400;font-size:12px;opacity:.75">' +
+        `マーカー ${(MARKER_SIZE_M*100).toFixed(0)}cm ／ 模型 ${(MODEL_ON_MARKER_M*100).toFixed(0)}cm` +
+        `<br>映像 ${arVideoSize} ／ 解析 ${c ? c.canvasWidth+'×'+c.canvasHeight : '-'}` +
+        `<br>解析フレーム ${arFrames} ／ 検出 ${arHits}</span>`;
     }
 
     async function enterAR(){
@@ -626,7 +670,9 @@
           orientOK = !!DOE;
         }
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+          // 4:3を要求する。camera_para.dat（ARToolKitの校正）が4:3前提なので、16:9のままだと
+          // マーカー姿勢の精度が落ちる。得られなければ解析キャンバス側で実寸比に合わせる。
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 960 }, frameRate: { ideal: 30 } },
           audio: false,
         });
       } catch(err){
@@ -915,6 +961,7 @@
       loadArjs, enterMarker, exitMarker, placeOnMarker, markerTick,
       get markerMode(){ return markerMode; },
       get arCtx(){ return arCtx; }, get arMarker(){ return arMarker; },
+      resetPose, waitVideoReady, updateMarkerMsg,
       MARKER_SIZE_M, MODEL_ON_MARKER_M, get modelHeightWorld(){ return modelHeightWorld; },
       setOrient(a,b,g,s){ devA=a; devB=b; devG=g; screenAngle=s; },   // 検証用に姿勢を注入
       setArMode(v){ arMode=v; orientOK=v; document.body.classList.toggle('ar', v); },
