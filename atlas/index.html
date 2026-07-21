@@ -580,6 +580,10 @@
       });
       markerMode = true;
       placeOnMarker();
+      // マーカーを認識するまでは出さない。ここで隠しておかないと、映像の準備が整うまで
+      // markerTick が早期 return する間ずっと既定の visible=true のまま出てしまう。
+      root.visible = false;
+      document.body.classList.add('marker-lost');
       // 実機で設定値を確認できるように出す（印刷実寸と食い違うと大きさも距離も狂うため）
       document.getElementById('markerMsg').innerHTML =
         'マーカーを映してください<br><span style="font-weight:400;font-size:12px;opacity:.75">' +
@@ -600,9 +604,14 @@
     }
 
     function markerTick(){
-      if (!arCtx || !camEl.videoWidth) return;
-      try { arCtx.update(camEl); } catch(e){ return; }
-      const seen = !!(arMarker && arMarker.object3d && arMarker.object3d.visible);
+      // 準備が整っていない・解析に失敗した場合も「未検出」として扱う（出したままにしない）
+      let seen = false;
+      if (arCtx && camEl.videoWidth){
+        try {
+          arCtx.update(camEl);
+          seen = !!(arMarker && arMarker.object3d && arMarker.object3d.visible);
+        } catch(e){ seen = false; }
+      }
       root.visible = seen;
       document.body.classList.toggle('marker-lost', !seen);
     }
@@ -905,6 +914,7 @@
       enterAR, exitAR, recenter, orientationToQuaternion,
       loadArjs, enterMarker, exitMarker, placeOnMarker, markerTick,
       get markerMode(){ return markerMode; },
+      get arCtx(){ return arCtx; }, get arMarker(){ return arMarker; },
       MARKER_SIZE_M, MODEL_ON_MARKER_M, get modelHeightWorld(){ return modelHeightWorld; },
       setOrient(a,b,g,s){ devA=a; devB=b; devG=g; screenAngle=s; },   // 検証用に姿勢を注入
       setArMode(v){ arMode=v; orientOK=v; document.body.classList.toggle('ar', v); },
