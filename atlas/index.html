@@ -103,6 +103,11 @@
     #shareQRwrap.show{ display:block; }
     #shareQR{ width:186px; height:186px; background:#fff; border-radius:12px; padding:12px; box-sizing:border-box; }
     #shareQRwrap .cap{ font-size:12px; color:var(--sub); margin-top:6px; }
+    /* AR中の共有診断（版・接続・役割・受信数）。原因の遠隔切り分け用。 */
+    #arStat{ display:none; position:fixed; z-index:23; left:12px; top:calc(env(safe-area-inset-top) + 96px);
+      font-size:11px; line-height:1.5; color:#dfe6f5; background:rgba(10,13,22,.62);
+      padding:6px 9px; border-radius:9px; letter-spacing:.02em; pointer-events:none; }
+    body.ar #arStat{ display:block; }
     #pill{ position:fixed; z-index:21; right:12px; top:calc(env(safe-area-inset-top) + 58px);
       font-size:12px; font-weight:700; padding:6px 12px; border-radius:20px; display:none;
       border:1px solid var(--line); background:var(--panel); }
@@ -120,6 +125,7 @@
   </div>
   <div id="markerMsg">マーカーを映してください</div>
   <div id="markerHud"></div>
+  <div id="arStat"></div>
   <div id="top">
     <button class="btn" id="menuBtn">☰ 系統</button>
     <h1>解剖アトラス</h1>
@@ -563,7 +569,7 @@
     // 印刷実寸に合わせること。ここがズレると模型の大きさも距離も全部ズレる。
     // A4に刷ると黒枠の外寸は16cm（実測）。用紙を変えたら定規で測って合わせる。
     // 実機で調整できるよう URL で上書きできる: ?marker=0.16&model=0.5&arres=1280
-    const BUILD = 'v30';   // atlas/sw.js の CACHE と揃える。実機の版ズレ切り分け用
+    const BUILD = 'v31';   // atlas/sw.js の CACHE と揃える。実機の版ズレ切り分け用
     const _q = new URLSearchParams(location.search);
     const MARKER_SIZE_M = Math.max(0.02, parseFloat(_q.get('marker')) || 0.16);   // マーカー一辺(m)
     // 模型はマーカーに比例させる。固定値にするとマーカーを小さく刷ったとき模型だけ巨大になり、
@@ -865,6 +871,7 @@
     const RP = readRoomParams();
     let room = null, follower = false, wantPose = null, ptrLocal = null;
     let lastSent = 0, lastJson = '', lastPoseSent = 0;
+    let poseRecv = 0, lastConn = '';   // 診断用：先生から受け取った視点の回数・接続状態
     const shareEl = document.getElementById('share'), pill = document.getElementById('pill');
     const shareSt = document.getElementById('shareSt'), pillT = document.getElementById('pillT');
     const roomCode = document.getElementById('roomCode'), shareHint = document.getElementById('shareHint');
@@ -898,6 +905,15 @@
     // 番号を変えるとQRは合わなくなるので、その場合はURL文字列か tools/make_room_qr.py の印刷QRを使う。
     const CLASS_ROOM = 'SNM01';
     const shareQRwrap = document.getElementById('shareQRwrap');
+    // AR中の共有診断を常時表示：版・接続・役割・受信数。次のテストで原因を確実に切り分けるため。
+    const arStatEl = document.getElementById('arStat');
+    function updateArStat(){
+      if (!arMode){ return; }
+      const conn = !room ? '未接続'
+        : ({ connecting:'接続中', reconnecting:'再接続', open:'接続', closed:'切断' }[lastConn] || '—');
+      const role = !room ? '—' : (room.isPresenter() ? '先生(操作)' : (follower ? '参加(同期)' : '自由'));
+      arStatEl.textContent = `${BUILD} ・ 共有:${conn} ・ 役割:${role} ・ 受信:${poseRecv}`;
+    }
     // 現在のルームが既定クラスコードのときだけ同梱QRを出す。参加者用URLは常に文字列でも示す。
     function updateShareQR(){
       const c = (roomCode.value || '').toUpperCase().trim();
@@ -909,6 +925,7 @@
     }
 
     function setStatus(s){
+      lastConn = s;
       const map = { connecting:['#f2c14b','接続中…'], reconnecting:['#f2c14b','再接続中…'],
                     open:['#3ddc84','接続'], closed:['#e0524d','切断'] };
       const [c, t] = map[s] || ['#93a0c0','—'];
@@ -939,7 +956,7 @@
         // 誰も操作権を持っていない間は全員が自由に動かせる（1台だけで入室したときに固まらない）。
         // 先に動かした人が中継側で自動的に操作権を得る。
         onRole: (isP, pid) => { setFollower(!!pid && !isP); setStatus(room && room.isConnected() ? 'open' : 'connecting'); },
-        onPose: (d) => { wantPose = d; },
+        onPose: (d) => { wantPose = d; poseRecv++; },   // 受信数は同期が届いているかの証拠
         onState: (d) => { try { applyState(d); } catch(e){} },
       });
       updateShareQR();
@@ -1034,10 +1051,12 @@
       }
     }
 
+    let statTick = 0;
     renderer.setAnimationLoop(() => {
       if (arMode && markerMode) markerTick();                               // マーカーがカメラ姿勢を決める
       else if (arMode && orientOK) orientationToQuaternion(camera.quaternion);   // 端末の傾きで視線を決める
       syncTick();
+      if (arMode && (statTick++ % 12 === 0)) updateArStat();               // 共有診断を約5Hzで更新
       if (!arMode) controls.update();
       renderer.render(scene, camera);
     });
