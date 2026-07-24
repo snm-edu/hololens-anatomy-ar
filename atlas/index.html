@@ -569,7 +569,7 @@
     // 印刷実寸に合わせること。ここがズレると模型の大きさも距離も全部ズレる。
     // A4に刷ると黒枠の外寸は16cm（実測）。用紙を変えたら定規で測って合わせる。
     // 実機で調整できるよう URL で上書きできる: ?marker=0.16&model=0.5&arres=1280
-    const BUILD = 'v31';   // atlas/sw.js の CACHE と揃える。実機の版ズレ切り分け用
+    const BUILD = 'v32';   // atlas/sw.js の CACHE と揃える。実機の版ズレ切り分け用
     const _q = new URLSearchParams(location.search);
     const MARKER_SIZE_M = Math.max(0.02, parseFloat(_q.get('marker')) || 0.16);   // マーカー一辺(m)
     // 模型はマーカーに比例させる。固定値にするとマーカーを小さく刷ったとき模型だけ巨大になり、
@@ -729,15 +729,15 @@
       }
       arLost = present ? 0 : arLost + 1;
       const tracking = arLost <= AR_GRACE;          // 今マーカーを追えているか（手ブレの瞬断はGraceで吸収）
-      // 🔥一度でも読み込んだら表示は保持し続ける（マーカーが視界から外れても消さない）。
-      //   マーカーが見えない間は最後の姿勢のまま画面に保持され、再びマーカーを映すと上のスナップで
-      //   位置が補正される。iPadは6DOF(自分の位置)を取れないため、保持中は画面固定＝机上への
-      //   世界固定まではできない（それにはネイティブARが必要）。
-      const show = arAcquired;
+      // 🔥マーカーに固定する。マーカーを追えている間だけマーカー上に出し、外れたら消す。
+      //   前は「外れても保持」にしていたが、iPadは6DOF(自分の位置)を取れないため保持中は画面に
+      //   貼り付いて一緒に動く＝机上に固定できず「挙動がおかしい」原因だった。見えている間だけ
+      //   固定表示し、外れたら消す（変な浮きを出さない）。再びマーカーを映すと上のスナップで
+      //   即その位置へ復帰する（wasHeld判定）。これが6DOFなしで唯一破綻しない「マーカー固定」。
+      const show = tracking;
       if (arDisplay) arDisplay.visible = show;
-      // 大きな案内ボックス（ビルド番号つき）は初取得前だけ。取得後は下部の小さなHUDで状態を出す。
-      document.body.classList.toggle('marker-lost', !arAcquired && !tracking);
-      if (!arAcquired && arFrames % 15 === 0) updateMarkerMsg();   // 診断値を時々更新
+      document.body.classList.toggle('marker-lost', !tracking);
+      if (!tracking && arFrames % 15 === 0) updateMarkerMsg();   // 診断値を時々更新
       if (arFrames % 10 === 0) updateMarkerHud(tracking, arAcquired);
     }
 
@@ -746,9 +746,9 @@
     function updateMarkerHud(tracking, acquired){
       const hud = document.getElementById('markerHud');
       if (!tracking){
-        // 取得済みなら「保持中（再視認で補正）」、未取得なら「いま取るべき動作」を出す。
+        // マーカーに固定なので、外れている間は模型は出ない。映せばその位置に復帰する。
         hud.textContent = acquired
-          ? '保持中 ・ もう一度マーカーを映すと位置を補正します'
+          ? 'マーカーを映すと、その位置に模型が固定表示されます'
           : (arHits > 0
               ? 'マーカー全体がカメラに入るように、少し引いてください'
               : 'マーカーを平らに置いて、黒枠ごと全体を映してください');
