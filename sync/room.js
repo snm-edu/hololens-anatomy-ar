@@ -13,6 +13,7 @@
 
 const PING_MS = 25000;
 const BACKOFF = [500, 1000, 2000, 4000, 8000, 15000];
+const WAIT_OPEN_MS = 20000;   // 教員が部屋を開くのを待つ間の再試行間隔
 
 export function createRoom(opts) {
   const { url, room, onStatus, onPose, onState, onRole } = opts;
@@ -58,7 +59,16 @@ export function createRoom(opts) {
       }
     };
 
-    ws.onclose = () => { clearInterval(pingTimer); scheduleReconnect(); };
+    // 中継の拒否コード（worker.js）: 4404=教員がまだ部屋を開いていない → ゆっくり待ち続ける
+    //   （学生が先にQRを見ても、先生が開いた時点で入れる）。4400=部屋名が不正 / 4401=ライセンス無効
+    //   → 何度やっても通らないので止める（止めないと全端末が叩き続ける）。
+    ws.onclose = (ev) => {
+      clearInterval(pingTimer);
+      const code = ev && ev.code;
+      if (code === 4404) { status('waiting'); reconnectTimer = setTimeout(connect, WAIT_OPEN_MS); return; }
+      if (code >= 4400 && code < 4500) { closed = true; status('rejected', String(code)); return; }
+      scheduleReconnect();
+    };
     ws.onerror = () => { try { ws.close(); } catch {} };
   }
 

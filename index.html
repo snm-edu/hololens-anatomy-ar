@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: 描画まとめ・名前修正・fps表示 v6（診断つき）");
+    log("版: 先生と連動・マーカー合わせ v7（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -96,7 +96,7 @@
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
     import { readRoomParams } from './sync/config.js';
-    import { createRoom } from './sync/room.js';
+    import { createRoom } from './sync/room.js?v=7';   // 拒否コードの扱いを変えた版（Pages の10分キャッシュ対策）
     import { makeViewSync } from './sync/viewsync.js';
     import { labelName, humanize } from './names.js?v=6';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
     log("three r"+THREE.REVISION+" import OK");
@@ -155,21 +155,22 @@
     const onStart=(e)=>{ const c=e.target;
       if(!ctrls.some(o=>o!==c && o.userData.sel)){
         const ic=iconAt(c);
-        if(ic){ setModel(ic.object.userData.key); return; }   // アイコンは移動の起点にしない
-        pickAt(c);
+        if(ic){ const k=ic.object.userData.key; if(k==='align') cycleColoc(); else setModel(k); return; }   // アイコンは移動の起点にしない
+        if(colocMode!=='align') pickAt(c);
       }
       c.userData.sel=true; refresh(); };
     const onEnd  =(e)=>{ e.target.userData.sel=false; refresh(); };
     ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
 
     function updateManip(){
+      if(colocMode==='fixed'){ one=null; two=null; return; }   // マーカーに固定中はうっかり動かさない
       if(two){
         const sel=ctrls.filter(c=>c.userData.sel);
         if(sel.length<2) return;
         const a=sel[0], b=sel[1];
         const dist=Math.max(1e-4, a.position.distanceTo(b.position));
         // 拡大縮小(両手の距離)
-        root.scale.setScalar(Math.min(8, Math.max(0.05, two.scale0 * dist/two.dist0)));
+        if(colocMode==='off') root.scale.setScalar(Math.min(8, Math.max(0.05, two.scale0 * dist/two.dist0)));   // 合わせ中は等身大のまま
         // 回転(両手の角度・±π折返しをアンラップ＋ゲイン増幅)
         const yaw=yawOf(a,b);
         let d=yaw-two.prevYaw; if(d>Math.PI)d-=2*Math.PI; else if(d<-Math.PI)d+=2*Math.PI;
@@ -206,6 +207,8 @@
         // 皮膚は女性と同じく半透明。胸郭は閉じているので半透明にして中を見せる（iPad版と同じ値）
         translucent:[[/^skin$/i,0.22],[/_rib$|_rib_|costal_cartilage|sternum|manubrium|xiphoid|diaphragm/i,0.55]] },
     };
+    // iPadアプリの標本ID → HL2の標本（AnatomyAR/ModelCatalog.swift の id）
+    const MODEL_OF_TEACHER={ female:'female', human_atlas_lite:'male', human_atlas:'male' };
     const loaded={};   // 読み込み済みの標本（切り替えのたびにダウンロードし直さない）
     let curKey=null, loadingKey=null, placed=false;
     function prepare(def, model){
@@ -232,9 +235,13 @@
       const size=new THREE.Vector3(), center=new THREE.Vector3();
       box.getSize(size); box.getCenter(center);
       const h=Math.max(size.x,size.y,size.z)||1;
+      // 等身大（②マーカー合わせ）用: iPadアプリの変換と同じく「身長1.60m・足元の中央が原点」
+      //   （anatomy-ar-ios/tools/glb_to_usd_native.py）。女性GLBは中心が原点なのでこれをしないと
+      //   足がマーカーより0.8m下に埋まる（2026-10-03 実測）。
+      const ls=1.60/h, life={s:ls, pos:new THREE.Vector3(-center.x, -box.min.y, -center.z).multiplyScalar(ls)};
       const s=0.7/h; model.scale.setScalar(s);
       model.position.sub(center.multiplyScalar(s));
-      model.userData.fit={h,s};
+      model.userData.fit={h,s,pos:model.position.clone(),life};
       log(`✓ GLB読込完了(${def.label}) meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
     }
     // === 描画をまとめる: 同じ見た目（色・不透明）の部位を1つのメッシュに結合して描く ===
@@ -288,6 +295,7 @@
       if(modelObj) root.remove(modelObj);
       meshList.length=0; model.traverse(o=>{ if(o.isMesh && !o.userData.batch) meshList.push(o); });
       root.add(model);
+      placeModel(model);
       modelObj=model; radiusLocal=model.userData.fit.h*0.5; radiusWorldBase=model.userData.fit.h*0.5*model.userData.fit.s;   // 共有ルーム用
       // local座標は原点=頭の位置。目線やや下・正面0.8mに配置（切り替えでは置き場所を保つ）
       if(!placed){ root.position.set(0, -0.1, -0.8); placed=true; }
@@ -311,17 +319,71 @@
         (ev)=>{ if(ev.total){ const p=Math.round(ev.loaded/ev.total*100); if(p>=pct+25||p===100){ pct=p; log('DL '+p+'%'); } } },
         (err)=>{ loadingKey=null; drawIcons(); log('✗ GLB読込エラー: '+(err.message||err)); });
     }
-    // 切り替えアイコン（模型の左足元に縦に2つ）。模型と一緒に動くよう root の子にする
-    const icons=Object.keys(MODELS).map((key,i)=>{
+    // アイコン（模型の左足元に縦に並べる）: ♀/♂=標本の切替、⌖=印刷マーカーへの位置合わせ。
+    //   模型と一緒に動くよう root の子にする
+    const icons=[...Object.keys(MODELS),'align'].map((key,i)=>{
       const cv=document.createElement('canvas'); cv.width=cv.height=256;
       const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), depthTest:false, transparent:true}));
       sp.renderOrder=997; sp.scale.set(0.07,0.07,1); sp.position.set(-0.30, -0.30+i*0.085, 0);
       sp.userData={key, cv}; root.add(sp); return sp;
     });
+    // ===== ② 印刷マーカーに合わせて、iPadアプリと同じ場所・等身大で重ねる =====
+    //   iPadは印刷マーカーの中心を原点に、模型をGLBの座標そのまま（等身大）で立てる（ARController.fixWorld）。
+    //   HL2のブラウザはマーカーを認識できないので、16cm角の枠を手で印刷マーカーに重ねてもらい、
+    //   その枠（= root の原点）を同じ原点として使う。ARKitの画像アンカーは x=画像の右・y=面の法線（上）・
+    //   z=画像の下向き（※要実機確認）なので、枠の矢印（-z）を印刷した用紙の上側に向けてもらう。
+    //   'off'=机上の縮小模型 → 'align'=枠を合わせる（模型は隠す・移動と回転だけ） → 'fixed'=等身大で固定（動かさない）
+    let colocMode='off', saved=null;
+    const markerFrame=new THREE.Group(); markerFrame.visible=false; root.add(markerFrame);
+    {
+      const h=0.08, V=(a)=>new THREE.Vector3(...a);
+      const cyan=new THREE.LineBasicMaterial({color:0x00e5ff, depthTest:false}), yel=new THREE.LineBasicMaterial({color:0xffe200, depthTest:false});
+      const sq=new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([[-h,0,-h],[h,0,-h],[h,0,h],[-h,0,h]].map(V)), cyan);
+      const arrow=new THREE.Line(new THREE.BufferGeometry().setFromPoints([[0,0,0.03],[0,0,-h-0.04],[-0.025,0,-h-0.015],[0,0,-h-0.04],[0.025,0,-h-0.015]].map(V)), yel);
+      const fill=new THREE.Mesh(new THREE.PlaneGeometry(2*h,2*h), new THREE.MeshBasicMaterial({color:0x00e5ff, transparent:true, opacity:0.15, depthTest:false, side:THREE.DoubleSide}));
+      fill.rotation.x=-Math.PI/2;
+      for(const o of [sq,arrow,fill]) o.renderOrder=996;
+      const tip=makeLabel('枠を印刷マーカーに重ねる','矢印を用紙の上側へ／片手で移動・両手で回転'); tip.position.set(0,0.10,0);
+      markerFrame.add(sq,arrow,fill,tip); markerFrame.userData.tip=tip;
+    }
+    function placeModel(model){   // 標本の置き方をモードに合わせる
+      const f=model.userData.fit;
+      if(colocMode==='off'){ model.scale.setScalar(f.s); model.position.copy(f.pos); }
+      else { model.scale.setScalar(f.life.s); model.position.copy(f.life.pos); }
+      model.visible = colocMode!=='align';
+    }
+    function layoutUI(){   // アイコン類の置き場所（机上の縮小模型なら足元、等身大ならマーカーの左上）
+      const b = colocMode==='off' ? new THREE.Vector3(-0.30,-0.30,0) : new THREE.Vector3(-0.30,0.15,0);
+      icons.forEach((sp,i)=>sp.position.set(b.x, b.y+i*0.085, b.z));
+      fpsSp.position.set(b.x, b.y+icons.length*0.085-0.02, b.z);
+      roomSp.position.set(b.x, b.y-0.065, b.z);
+    }
+    function cycleColoc(){
+      clearPick();
+      if(colocMode==='off'){
+        saved={pos:root.position.clone(), rot:root.rotation.y, scale:root.scale.x};
+        // 枠は目の前0.5m・目線の0.4m下に出す。矢印（用紙の上側）は向こう向き
+        const cam=camWorld(), v=renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+        const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(v.getWorldQuaternion(new THREE.Quaternion())); fwd.y=0;
+        if(fwd.lengthSq()<1e-6) fwd.set(0,0,-1); fwd.normalize();
+        root.position.copy(cam).addScaledVector(fwd,0.5); root.position.y-=0.4;
+        root.rotation.set(0, Math.atan2(-fwd.x,-fwd.z), 0); root.scale.setScalar(1);
+        colocMode='align'; log('位置合わせ: 枠を印刷マーカーに重ねてください');
+      } else if(colocMode==='align'){
+        colocMode='fixed'; log('位置合わせ: 固定しました（等身大・iPadと同じ原点）');
+      } else {
+        root.position.copy(saved.pos); root.rotation.set(0,saved.rot,0); root.scale.setScalar(saved.scale);
+        colocMode='off'; log('位置合わせ: 解除（机上の模型に戻しました）');
+      }
+      markerFrame.visible = colocMode!=='off';
+      markerFrame.userData.tip.visible = colocMode==='align';
+      if(modelObj) placeModel(modelObj);
+      layoutUI(); drawIcons();
+    }
     // 実機診断: アイコンの上に fps を出す（女性／男性の重さを比べるため）。DIAG=false で消える
     const fpsCv=document.createElement('canvas'); fpsCv.width=256; fpsCv.height=96;
     const fpsSp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(fpsCv), depthTest:false, transparent:true}));
-    fpsSp.renderOrder=997; fpsSp.scale.set(0.08,0.03,1); fpsSp.position.set(-0.30,-0.30+2*0.085-0.02,0); root.add(fpsSp);
+    fpsSp.renderOrder=997; fpsSp.scale.set(0.08,0.03,1); root.add(fpsSp);
     let fpsN=0, fpsT=performance.now();
     function tickFps(){
       fpsN++; const now=performance.now(); if(now-fpsT<1000) return;
@@ -335,8 +397,9 @@
     }
     function drawIcons(){
       for(const sp of icons){
-        const {key,cv}=sp.userData, def=MODELS[key], g=cv.getContext('2d');
-        const on=key===curKey, busy=key===loadingKey;
+        const {key,cv}=sp.userData, g=cv.getContext('2d');
+        const def = key==='align' ? {sym:'⌖', label:{off:'位置合わせ',align:'ここで固定',fixed:'元に戻す'}[colocMode]} : MODELS[key];
+        const on = key==='align' ? colocMode!=='off' : key===curKey, busy=key===loadingKey;
         g.clearRect(0,0,256,256);
         g.fillStyle = on ? '#1060ff' : busy ? '#806000' : 'rgba(40,48,70,0.85)';
         g.beginPath(); g.arc(128,128,120,0,Math.PI*2); g.fill();
@@ -394,6 +457,11 @@
       // 入室直後はまだGLB読込中で meshList が空。ここで捨てると学生は先生の表示状態を
       // 受け取れないまま既定の姿を見続けることになるので、必ず保持して読込後に適用する。
       pendingState=st;
+      // iPadアプリ（先生）は標本IDを hid の先頭に "model:<id>" で入れて送る（ClassroomSync.swift）。
+      //   HL2の標本と違うときは切り替え、読み込み後に show() がこの state を当て直す。
+      const tag=(st.hid||[]).find(h=>typeof h==='string' && h.startsWith('model:'));
+      const wantModel = tag ? MODEL_OF_TEACHER[tag.slice(6)] : null;
+      if(wantModel && wantModel!==curKey){ setModel(wantModel); return; }
       if(!meshList.length) return;
       const hid=new Set(st.hid||[]);
       let changed=false;
@@ -403,7 +471,14 @@
       if(want!==selMesh){
         if(selMesh) setHighlight(selMesh,false);
         selMesh=want||null;
-        if(selMesh){ setHighlight(selMesh,true); log('先生が選択: '+selMesh.name); }
+        if(selMesh){
+          setHighlight(selMesh,true);
+          const c=new THREE.Box3().setFromObject(selMesh).getCenter(new THREE.Vector3());
+          if(pickMesh && pickMesh!==selMesh) setHighlight(pickMesh,false);
+          pickMesh=null;
+          placeLabel(selMesh, c);
+          log('先生が選択: '+selMesh.name);
+        } else if(st.sel){ log('先生が選択（この標本に無い部位）: '+st.sel); }
       }
     }
     // 手の光線で構造を選び、日本語名の札を出す（この端末だけ。共有ルームには送らない）。
@@ -483,7 +558,14 @@
       clearPick();
       if(!hit){ log('つまみ: 構造なし（光線の先に何もない）'); if(DIAG) showDiag(c,'光線の先に構造なし'); return; }
       pickMesh=hit.object; setHighlight(pickMesh,true);
-      const jp=labelName(pickMesh.name), en=humanize(pickMesh.name);
+      const jp=placeLabel(pickMesh, hit.point);
+      log('つまみ: '+(jp||'（日本語名なし）')+' / '+pickMesh.name);
+    }
+    // 名前の札を出す（自分でつまんだときも、先生が選んだときも同じ見せ方）。point=引出線の始点（世界座標）
+    function placeLabel(mesh, point){
+      if(labelSprite){ labelSprite.parent?.remove(labelSprite); labelSprite.material.map.dispose(); labelSprite.material.dispose(); labelSprite=null; }
+      if(labelLine){ labelLine.parent?.remove(labelLine); labelLine.geometry.dispose(); labelLine.material.dispose(); labelLine=null; }
+      const jp=labelName(mesh.name), en=humanize(mesh.name);
       labelSprite=makeLabel(jp, en);
       // 札は体の外へ出し、細い線で当たり点と結ぶ。当たり点の真上に出すと隣の臓器を隠して
       //   次を指しにくい（2026-10-03 実機）。左右は見ている人から見て当たり点のある側。
@@ -494,23 +576,23 @@
       let half=0;
       for(const x of [box.min.x,box.max.x]) for(const y of [box.min.y,box.max.y]) for(const z of [box.min.z,box.max.z])
         half=Math.max(half, Math.abs(new THREE.Vector3(x,y,z).sub(ctr).dot(right)));
-      const side = hit.point.clone().sub(ctr).dot(right) < 0 ? -1 : 1;
+      const side = point.clone().sub(ctr).dot(right) < 0 ? -1 : 1;
       const lw=labelSprite.scale.x;   // 札の幅（世界座標）
-      const at=ctr.clone().addScaledVector(right, side*(half+0.02+lw/2)); at.y=hit.point.y;
+      const at=ctr.clone().addScaledVector(right, side*(half+0.02+lw/2)); at.y=point.y;
       const edge=at.clone().addScaledVector(right, -side*lw/2);   // 札の体側の端
       // 模型と一緒に動くよう root の子にする。札の大きさは root の拡縮を打ち消して一定に保つ
       labelSprite.position.copy(root.worldToLocal(at.clone()));
       labelSprite.scale.divideScalar(root.scale.x);
       root.add(labelSprite);
-      labelLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([root.worldToLocal(hit.point.clone()), root.worldToLocal(edge)]),
+      labelLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([root.worldToLocal(point.clone()), root.worldToLocal(edge)]),
         new THREE.LineBasicMaterial({color:0xffe200, depthTest:false, transparent:true}));
       labelLine.renderOrder=999; root.add(labelLine);
-      log('つまみ: '+(jp||'（日本語名なし）')+' / '+pickMesh.name);
+      return jp;
     }
     function syncTick(){
       if(!room || !modelObj) return;
       if(follower){
-        if(!wantPose) return;
+        if(!wantPose || colocMode!=='off') return;   // マーカー原点を共有しているときは各自の位置が正（iPadも視点同期を使わない）
         VS.applyTurntable({root, camWorld:camWorld()}, wantPose, 0.2);
         showPointer(wantPose.p||null);
       } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
@@ -524,11 +606,26 @@
         if(j!==lastJson || now-lastPoseSent>2000){ lastJson=j; lastPoseSent=now; room.sendPose(p); }
       }
     }
+    // 部屋の状態をAR内に出す（没入中はページの文字が見えないため）。模型の左足元、アイコンの下
+    const roomCv=document.createElement('canvas'); roomCv.width=512; roomCv.height=96;
+    const roomSp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(roomCv), depthTest:false, transparent:true}));
+    roomSp.renderOrder=997; roomSp.scale.set(0.16,0.03,1); roomSp.visible=false; root.add(roomSp);
+    layoutUI();
+    function showRoom(text, color){
+      const g=roomCv.getContext('2d'); g.clearRect(0,0,512,96);
+      g.fillStyle='rgba(0,0,0,0.65)'; g.fillRect(0,0,512,96);
+      g.fillStyle=color; g.font='bold 40px sans-serif'; g.textAlign='center'; g.textBaseline='middle'; g.fillText(text,256,50,496);
+      roomSp.material.map.needsUpdate=true; roomSp.visible=true;
+    }
+    const ROOM_TEXT={ connecting:['接続中…','#ffe200'], reconnecting:['再接続中…','#ffe200'], open:['接続しました','#7CFC00'],
+      waiting:['先生が部屋を開くのを待っています','#ffe200'], rejected:['この部屋には入れません','#ff6060'], closed:['切断（再接続します）','#ff9a40'] };
     if(RP.enabled && RP.room){
       room=createRoom({ url:RP.url, room:RP.room,
-        onStatus:(s)=>log('共有ルーム['+RP.room+']: '+s),
+        onStatus:(s,detail)=>{ log('共有ルーム['+RP.room+']: '+s+(detail?' '+detail:''));
+          const [t,c]=ROOM_TEXT[s]||[s,'#fff']; showRoom(`部屋 ${RP.room}：${t}`, c); },
         // 誰も操作権を持っていない間は自分で自由に回せる（1台だけで入室したときに固まらない）
         onRole:(isP,pid)=>{ follower=!!pid && !isP;
+          if(follower) showRoom(`部屋 ${RP.room}：先生と連動中`,'#7CFC00');
           log(follower?'参加者モード（先生の操作に同期／片手で置き場所だけ移動可）'
                       :'自由操作モード（両手で回転・拡縮できます。動かすとあなたが操作権を持ちます）'); },
         onPose:(d)=>{ wantPose=d; },
@@ -538,7 +635,7 @@
     window.__dbg={THREE,VS,camera,root,syncTick,applyState,meshList,camWorld,
       get model(){return modelObj},get room(){return room},
       get wantPose(){return wantPose},get follower(){return follower},get selMesh(){return selMesh},
-      pickAt,ctrls,pointers,updatePointers,icons,setModel,get curKey(){return curKey},
+      pickAt,ctrls,pointers,updatePointers,icons,setModel,cycleColoc,markerFrame,get colocMode(){return colocMode},get curKey(){return curKey},
       get pickMesh(){return pickMesh},get labelSprite(){return labelSprite},get labelLine(){return labelLine}};
 
     let frames=0;
