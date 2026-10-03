@@ -98,7 +98,7 @@
     import { readRoomParams } from './sync/config.js';
     import { createRoom } from './sync/room.js';
     import { makeViewSync } from './sync/viewsync.js';
-    import { labelName, humanize } from './names.js';
+    import { labelName, humanize } from './names.js?v=6';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
     log("three r"+THREE.REVISION+" import OK");
     if('xr' in navigator) navigator.xr.isSessionSupported('immersive-ar').then(s=>log("immersive-ar supported: "+s));
 
