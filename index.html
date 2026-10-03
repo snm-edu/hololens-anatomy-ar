@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: 先生と連動・マーカー合わせ v7（診断つき）");
+    log("版: 和名表・先生と連動・マーカー合わせ v8（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -98,7 +98,7 @@
     import { readRoomParams } from './sync/config.js';
     import { createRoom } from './sync/room.js?v=7';   // 拒否コードの扱いを変えた版（Pages の10分キャッシュ対策）
     import { makeViewSync } from './sync/viewsync.js';
-    import { labelName, humanize } from './names.js?v=6';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
+    import { labelName, humanize } from './names.js?v=8';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
     log("three r"+THREE.REVISION+" import OK");
     if('xr' in navigator) navigator.xr.isSessionSupported('immersive-ar').then(s=>log("immersive-ar supported: "+s));
 

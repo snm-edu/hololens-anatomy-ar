@@ -12,6 +12,8 @@
 //     4) どれでもない → null（札には英語名だけ出る）
 // ⚠️ atlas/index.html には古い推測表（JP）が残っている。あちらも同じ誤りを出しうる。
 
+import TABLE from './names_ja.js?v=8';   // 男性標本の全1,659種類の和名表（最優先）
+
 // 名前全体（normBase 後）が一致したときだけ使う臓器・構造名
 const EXACT = {
   'liver':'肝臓','stomach':'胃','spleen':'脾臓','pancreas':'膵臓','esophagus':'食道','oesophagus':'食道',
@@ -89,9 +91,13 @@ export function jpKind(raw){
 //   「posterior vein of left ventricle」の left は心室の左右であって部位の左右ではない）。
 //   種類しか分からないときは ［動脈］ のように角かっこで「固有名ではない」ことを示す。
 export function labelName(raw){
+  // 和名表はメッシュ名（分割の連番 _2 _3 … を外したもの）で引く。左右も表の名前に含まれている
+  const t=TABLE[raw.replace(/_[0-9]+$/,'')]; if(t) return t;
   const jp=jpName(raw);
   if(jp){
-    const side = /^(VH_F_)?left_/i.test(raw) ? '左' : /^(VH_F_)?right_/i.test(raw) ? '右' : '';
+    // 女性の脳（Allen_…_L / _R）は左右が末尾に付く
+    const side = (/^(VH_F_)?left_/i.test(raw) || /^Allen_.*_L$/.test(raw)) ? '左'
+               : (/^(VH_F_)?right_/i.test(raw) || /^Allen_.*_R$/.test(raw)) ? '右' : '';
     return (side && !/^[左右]/.test(jp)) ? side+jp : jp;
   }
   const kind=jpKind(raw);
