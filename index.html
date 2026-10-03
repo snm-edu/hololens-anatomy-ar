@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: 和名表・先生と連動・マーカー合わせ v8（診断つき）");
+    log("版: 向き補正・札の距離 v9（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -346,10 +346,17 @@
       const tip=makeLabel('枠を印刷マーカーに重ねる','矢印を用紙の上側へ／片手で移動・両手で回転'); tip.position.set(0,0.10,0);
       markerFrame.add(sq,arrow,fill,tip); markerFrame.userData.tip=tip;
     }
+    // マーカー枠に対する模型の向き。2026-10-03 実機: 枠の矢印を用紙の上側に向けると、HL2 の模型は
+    //   正面（手前）を向き、iPad の模型は見ている人から見て左（90度左）を向いた → iPad に合わせて左へ90度。
+    //   （ARKit 画像アンカーの軸の想定が90度ずれていた。逆を向いたら符号を変える）
+    const COLOC_YAW = -Math.PI/2;
     function placeModel(model){   // 標本の置き方をモードに合わせる
       const f=model.userData.fit;
-      if(colocMode==='off'){ model.scale.setScalar(f.s); model.position.copy(f.pos); }
-      else { model.scale.setScalar(f.life.s); model.position.copy(f.life.pos); }
+      if(colocMode==='off'){ model.scale.setScalar(f.s); model.position.copy(f.pos); model.rotation.set(0,0,0); }
+      else {
+        model.scale.setScalar(f.life.s); model.rotation.set(0,COLOC_YAW,0);
+        model.position.copy(f.life.pos).applyAxisAngle(new THREE.Vector3(0,1,0), COLOC_YAW);   // 足元中央の原点も一緒に回す
+      }
       model.visible = colocMode!=='align';
     }
     function layoutUI(){   // アイコン類の置き場所（机上の縮小模型なら足元、等身大ならマーカーの左上）
@@ -380,7 +387,8 @@
       if(modelObj) placeModel(modelObj);
       layoutUI(); drawIcons();
     }
-    // 実機診断: アイコンの上に fps を出す（女性／男性の重さを比べるため）。DIAG=false で消える
+    // 実機診断: アイコンの上に fps を出す（女性／男性の重さを比べるため）。2026-10-03 計測済み（35〜50fps）で非表示
+    const SHOW_FPS=false;
     const fpsCv=document.createElement('canvas'); fpsCv.width=256; fpsCv.height=96;
     const fpsSp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(fpsCv), depthTest:false, transparent:true}));
     fpsSp.renderOrder=997; fpsSp.scale.set(0.08,0.03,1); root.add(fpsSp);
@@ -388,7 +396,7 @@
     function tickFps(){
       fpsN++; const now=performance.now(); if(now-fpsT<1000) return;
       const fps=Math.round(fpsN*1000/(now-fpsT)); fpsN=0; fpsT=now;
-      fpsSp.visible=DIAG; if(!DIAG) return;
+      fpsSp.visible=SHOW_FPS; if(!SHOW_FPS) return;
       const g=fpsCv.getContext('2d'); g.clearRect(0,0,256,96);
       g.fillStyle='rgba(0,0,0,0.6)'; g.fillRect(0,0,256,96);
       g.fillStyle = fps>=55 ? '#7CFC00' : fps>=40 ? '#ffe200' : '#ff6060';
@@ -435,7 +443,7 @@
     }
     // 先生が「今かくれている構造」を名前で送ってくるので、そのまま反映する。
     // ただし forceHidden（ARで前面を塞ぐ構造）はこの端末の方針として常に隠したまま。
-    let selMesh=null, pendingState=null;
+    let selMesh=null, pendingState=null, stateCount=0;   // stateCount: 先生から届いた state の数（実機の切り分け用）
     // 材質は部位間で共有されうるので、光らせる部位にだけ複製を差し替え、戻すときに元へ戻す
     function setHighlight(o,on){
       if(on){
@@ -457,6 +465,7 @@
       // 入室直後はまだGLB読込中で meshList が空。ここで捨てると学生は先生の表示状態を
       // 受け取れないまま既定の姿を見続けることになるので、必ず保持して読込後に適用する。
       pendingState=st;
+      stateCount++;
       // iPadアプリ（先生）は標本IDを hid の先頭に "model:<id>" で入れて送る（ClassroomSync.swift）。
       //   HL2の標本と違うときは切り替え、読み込み後に show() がこの state を当て直す。
       const tag=(st.hid||[]).find(h=>typeof h==='string' && h.startsWith('model:'));
@@ -480,7 +489,9 @@
           pickMesh=null;
           placeLabel(selMesh, c);
           log('先生が選択: '+selMesh.name);
-        } else if(st.sel){ log('先生が選択（この標本に無い部位）: '+st.sel); }
+          if(room) showRoom(`部屋 ${RP.room}：先生の選択を受信`,'#7CFC00');
+        } else if(st.sel){ log('先生が選択（この標本に無い部位）: '+st.sel);
+          if(room) showRoom(`先生の選択がこの標本にありません: ${st.sel}`,'#ffe200'); }
       }
     }
     // 手の光線で構造を選び、日本語名の札を出す（この端末だけ。共有ルームには送らない）。
@@ -574,10 +585,19 @@
       const viewer = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
       const right=new THREE.Vector3(1,0,0).applyQuaternion(viewer.getWorldQuaternion(new THREE.Quaternion()));
       right.y=0; if(right.lengthSq()<1e-6) right.set(1,0,0); right.normalize();
+      // 体全体の外側に出すと、等身大では広げた腕・手まで含むので札が遠すぎた（2026-10-03 実機）。
+      //   指した高さ（身長の±3%）にかかる部位だけで体の幅を測り、そのすぐ外に出す
       const box=new THREE.Box3().setFromObject(modelObj), ctr=box.getCenter(new THREE.Vector3());
+      const band=(box.max.y-box.min.y)*0.03, mb=new THREE.Box3();
       let half=0;
-      for(const x of [box.min.x,box.max.x]) for(const y of [box.min.y,box.max.y]) for(const z of [box.min.z,box.max.z])
-        half=Math.max(half, Math.abs(new THREE.Vector3(x,y,z).sub(ctr).dot(right)));
+      for(const m of meshList){
+        if(!shown(m)) continue;
+        mb.setFromObject(m);
+        if(mb.max.y<point.y-band || mb.min.y>point.y+band) continue;
+        for(const x of [mb.min.x,mb.max.x]) for(const z of [mb.min.z,mb.max.z])
+          half=Math.max(half, Math.abs(new THREE.Vector3(x,point.y,z).sub(ctr).dot(right)));
+      }
+      if(!half) half=Math.abs(point.clone().sub(ctr).dot(right));
       const side = point.clone().sub(ctr).dot(right) < 0 ? -1 : 1;
       const lw=labelSprite.scale.x;   // 札の幅（世界座標）
       const at=ctr.clone().addScaledVector(right, side*(half+0.02+lw/2)); at.y=point.y;
@@ -628,6 +648,7 @@
         // 誰も操作権を持っていない間は自分で自由に回せる（1台だけで入室したときに固まらない）
         onRole:(isP,pid)=>{ follower=!!pid && !isP;
           if(follower) showRoom(`部屋 ${RP.room}：先生と連動中`,'#7CFC00');
+          else if(!pid) showRoom(`部屋 ${RP.room}：先生（発表者）がいません`,'#ffe200');
           log(follower?'参加者モード（先生の操作に同期／片手で置き場所だけ移動可）'
                       :'自由操作モード（両手で回転・拡縮できます。動かすとあなたが操作権を持ちます）'); },
         onPose:(d)=>{ wantPose=d; },
@@ -638,7 +659,7 @@
       get model(){return modelObj},get room(){return room},
       get wantPose(){return wantPose},get follower(){return follower},get selMesh(){return selMesh},
       pickAt,ctrls,pointers,updatePointers,icons,setModel,cycleColoc,markerFrame,get colocMode(){return colocMode},get curKey(){return curKey},
-      get pickMesh(){return pickMesh},get labelSprite(){return labelSprite},get labelLine(){return labelLine}};
+      get stateCount(){return stateCount}, get pickMesh(){return pickMesh},get labelSprite(){return labelSprite},get labelLine(){return labelLine}};
 
     let frames=0;
     renderer.setAnimationLoop(()=>{
