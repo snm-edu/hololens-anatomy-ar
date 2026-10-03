@@ -87,17 +87,18 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: 札の位置・男女切替 v5（診断つき）");
+    log("版: 描画まとめ・名前修正・fps表示 v6（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
     import * as THREE from 'three';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
     import { readRoomParams } from './sync/config.js';
     import { createRoom } from './sync/room.js';
     import { makeViewSync } from './sync/viewsync.js';
-    import { jpName, humanize } from './names.js';
+    import { labelName, humanize } from './names.js';
     log("three r"+THREE.REVISION+" import OK");
     if('xr' in navigator) navigator.xr.isSessionSupported('immersive-ar').then(s=>log("immersive-ar supported: "+s));
 
@@ -201,8 +202,7 @@
         // iPadアプリの男性標本（human-atlas 軽量版）を HoloLens 向けに変換したもの。
         //   筋（横隔膜以外）と外性器・陰毛は変換時に除去済み（HL2には表示切替の画面が無いため）。
         //   ポリゴンは iPad 版の約半分。⚠️ この標本には肺が無く、肝臓は尾状葉のみ。
-        //   材質が系統ごとに共有なので、部位ごとに複製しないと1つ光らせると系統全体が光る。
-        ownMaterials:true,
+        //   材質は系統ごとに共有（15個）。光らせるときは setHighlight がその部位だけ材質を差し替える。
         // 皮膚は女性と同じく半透明。胸郭は閉じているので半透明にして中を見せる（iPad版と同じ値）
         translucent:[[/^skin$/i,0.22],[/_rib$|_rib_|costal_cartilage|sternum|manubrium|xiphoid|diaphragm/i,0.55]] },
     };
@@ -213,20 +213,20 @@
       model.traverse(o=>{
         if(!o.isMesh) return;
         meshes++;
-        if(def.ownMaterials) o.material = Array.isArray(o.material) ? o.material.map(m=>m.clone()) : o.material.clone();
         // AR で前面を塞ぐ構造はこの端末の方針として常に隠す（共有ルームでも上書きさせない）
         if(def.hide && def.hide.test(o.name)){ o.userData.forceHidden=true; o.visible=false; hidden++; if(hiddenNames.length<14) hiddenNames.push(o.name); return; }
         const g=o.geometry; tris += g.index? g.index.count/3 : (g.attributes.position? g.attributes.position.count/3:0);
         const op = def.translucent ? (def.translucent.find(([re])=>re.test(o.name))||[])[1] : undefined;
+        // 半透明にする部位だけ材質を複製（共有のまま変えると同じ系統の全部位が透ける＝肋骨と一緒に全骨格が透ける）
+        if(op!==undefined) o.material = Array.isArray(o.material) ? o.material.map(m=>m.clone()) : o.material.clone();
         // 加算表示で見えるよう自発光ブースト＋両面
         const mats=Array.isArray(o.material)?o.material:[o.material];
         for(const mt of mats){ if(mt){ mt.emissive=mt.color? mt.color.clone():new THREE.Color(0x888888); mt.emissiveIntensity=0.35; mt.side=THREE.DoubleSide; mt.metalness=0.0; mt.roughness=0.9;
           if(op!==undefined){ mt.transparent=true; mt.opacity=op; mt.depthWrite=false; } } }
-        const f=Array.isArray(o.material)?o.material[0]:o.material;   // 選択ハイライトの復帰用
-        o.userData.baseEm = f&&f.emissive ? f.emissive.clone() : new THREE.Color(0x000000);
-        o.userData.baseEI = (f&&f.emissiveIntensity!=null) ? f.emissiveIntensity : 1;
       });
       if(hidden) log(`非表示 ${hidden}件: ${hiddenNames.join(', ')}`);
+      model.updateMatrixWorld(true);
+      rebuildBatches(model);
       // 自動フィット: 高さ0.7mへスケール→原点中心化
       const box=new THREE.Box3().setFromObject(model);
       const size=new THREE.Vector3(), center=new THREE.Vector3();
@@ -237,12 +237,56 @@
       model.userData.fit={h,s};
       log(`✓ GLB読込完了(${def.label}) meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
     }
+    // === 描画をまとめる: 同じ見た目（色・不透明）の部位を1つのメッシュに結合して描く ===
+    //   ブラウザは部位1つごとに描画命令を出す。男性（1,821部位）は三角形数が女性とほぼ同じ
+    //   （34万 vs 32万）なのに重かった（2026-10-03 実機）＝部位数が効いていると判断。
+    //   部位そのものは PART_LAYER に移して描かず、光線の当たり判定と名前引きだけに使う。
+    //   光らせる部位だけ通常レイヤーに戻し、結合メッシュの手前に重ねて描く（setHighlight）。
+    //   半透明の部位（皮膚・胸郭など）は描画順が崩れるので結合しない。
+    const PART_LAYER=5;   // 1・2 は three が左右の目に使うので避ける
+    function rebuildBatches(model){
+      for(const b of model.userData.batches||[]){ model.remove(b); b.geometry.dispose(); }
+      const inv=new THREE.Matrix4().copy(model.matrixWorld).invert();
+      const groups=new Map();
+      model.traverse(o=>{
+        if(!o.isMesh || o.userData.batch) return;
+        o.layers.set(0); o.userData.batched=false;
+        const m=o.userData.hiMat ? o.userData.origMat : o.material;
+        if(Array.isArray(m) || !o.visible || m.transparent || !o.geometry.index) return;
+        let vis=true; for(let p=o.parent; p && p!==model; p=p.parent) if(!p.visible) vis=false;
+        if(!vis) return;
+        const key=m.color.getHexString()+'|'+m.side;
+        if(!groups.has(key)) groups.set(key,{mat:m, parts:[]});
+        groups.get(key).parts.push(o);
+      });
+      const batches=[];
+      for(const {mat,parts} of groups.values()){
+        if(parts.length<2) continue;
+        const geos=parts.map(o=>{
+          const g=new THREE.BufferGeometry();
+          g.setAttribute('position', o.geometry.attributes.position.clone());
+          if(o.geometry.attributes.normal) g.setAttribute('normal', o.geometry.attributes.normal.clone());
+          g.setIndex(o.geometry.index.clone());
+          return g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld));
+        });
+        const ok=geos.every(g=>!!g.attributes.normal)===geos.some(g=>!!g.attributes.normal);
+        const merged= ok ? mergeGeometries(geos,false) : null;
+        geos.forEach(g=>g.dispose());
+        if(!merged) continue;   // 結合できない組はそのまま個別に描く
+        const bm=new THREE.Mesh(merged, mat); bm.userData.batch=true; bm.raycast=()=>{};   // 当たり判定は部位側で行う
+        model.add(bm); batches.push(bm);
+        for(const o of parts){ o.layers.set(PART_LAYER); o.userData.batched=true; if(o.userData.hiMat) o.layers.enable(0); }
+      }
+      model.userData.batches=batches;
+      let draws=0; model.traverse(o=>{ if(o.isMesh && o.visible && o.layers.isEnabled(0)) draws++; });
+      log(`描画まとめ: ${batches.length}組へ結合・描画対象 ${draws}`);
+    }
     function show(key){
       const model=loaded[key], def=MODELS[key];
       clearPick();
       if(selMesh){ setHighlight(selMesh,false); selMesh=null; }
       if(modelObj) root.remove(modelObj);
-      meshList.length=0; model.traverse(o=>{ if(o.isMesh) meshList.push(o); });
+      meshList.length=0; model.traverse(o=>{ if(o.isMesh && !o.userData.batch) meshList.push(o); });
       root.add(model);
       modelObj=model; radiusLocal=model.userData.fit.h*0.5; radiusWorldBase=model.userData.fit.h*0.5*model.userData.fit.s;   // 共有ルーム用
       // local座標は原点=頭の位置。目線やや下・正面0.8mに配置（切り替えでは置き場所を保つ）
@@ -274,6 +318,21 @@
       sp.renderOrder=997; sp.scale.set(0.07,0.07,1); sp.position.set(-0.30, -0.30+i*0.085, 0);
       sp.userData={key, cv}; root.add(sp); return sp;
     });
+    // 実機診断: アイコンの上に fps を出す（女性／男性の重さを比べるため）。DIAG=false で消える
+    const fpsCv=document.createElement('canvas'); fpsCv.width=256; fpsCv.height=96;
+    const fpsSp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(fpsCv), depthTest:false, transparent:true}));
+    fpsSp.renderOrder=997; fpsSp.scale.set(0.08,0.03,1); fpsSp.position.set(-0.30,-0.30+2*0.085-0.02,0); root.add(fpsSp);
+    let fpsN=0, fpsT=performance.now();
+    function tickFps(){
+      fpsN++; const now=performance.now(); if(now-fpsT<1000) return;
+      const fps=Math.round(fpsN*1000/(now-fpsT)); fpsN=0; fpsT=now;
+      fpsSp.visible=DIAG; if(!DIAG) return;
+      const g=fpsCv.getContext('2d'); g.clearRect(0,0,256,96);
+      g.fillStyle='rgba(0,0,0,0.6)'; g.fillRect(0,0,256,96);
+      g.fillStyle = fps>=55 ? '#7CFC00' : fps>=40 ? '#ffe200' : '#ff6060';
+      g.font='bold 64px monospace'; g.textAlign='center'; g.textBaseline='middle'; g.fillText(fps+' fps',128,50);
+      fpsSp.material.map.needsUpdate=true;
+    }
     function drawIcons(){
       for(const sp of icons){
         const {key,cv}=sp.userData, def=MODELS[key], g=cv.getContext('2d');
@@ -314,11 +373,22 @@
     // 先生が「今かくれている構造」を名前で送ってくるので、そのまま反映する。
     // ただし forceHidden（ARで前面を塞ぐ構造）はこの端末の方針として常に隠したまま。
     let selMesh=null, pendingState=null;
+    // 材質は部位間で共有されうるので、光らせる部位にだけ複製を差し替え、戻すときに元へ戻す
     function setHighlight(o,on){
-      const mats=Array.isArray(o.material)?o.material:[o.material];
-      for(const m of mats){ if(!m||!m.emissive) continue;
-        if(on){ m.emissive.setHex(0x2b6cff); m.emissiveIntensity=0.9; }
-        else { if(o.userData.baseEm) m.emissive.copy(o.userData.baseEm); m.emissiveIntensity=o.userData.baseEI??1; } }
+      if(on){
+        if(o.userData.hiMat) return;
+        // 結合メッシュと同じ位置に重ねて描くので、少し手前へずらして重なりのちらつきを防ぐ
+        const lit=m=>{ const c=m.clone(); if(c.emissive){ c.emissive.setHex(0x2b6cff); c.emissiveIntensity=0.9; }
+          c.polygonOffset=true; c.polygonOffsetFactor=-1; c.polygonOffsetUnits=-4; return c; };
+        o.userData.origMat=o.material;
+        o.material = o.userData.hiMat = Array.isArray(o.material) ? o.material.map(lit) : lit(o.material);
+        if(o.userData.batched) o.layers.enable(0);
+      } else if(o.userData.hiMat){
+        o.material=o.userData.origMat;
+        for(const m of [].concat(o.userData.hiMat)) m.dispose();
+        o.userData.hiMat=null;
+        if(o.userData.batched) o.layers.disable(0);
+      }
     }
     function applyState(st){
       // 入室直後はまだGLB読込中で meshList が空。ここで捨てると学生は先生の表示状態を
@@ -326,7 +396,9 @@
       pendingState=st;
       if(!meshList.length) return;
       const hid=new Set(st.hid||[]);
-      for(const m of meshList) m.visible = !m.userData.forceHidden && !hid.has(m.name);
+      let changed=false;
+      for(const m of meshList){ const v = !m.userData.forceHidden && !hid.has(m.name); if(m.visible!==v){ m.visible=v; changed=true; } }
+      if(changed && modelObj) rebuildBatches(modelObj);   // 結合メッシュは部位の表示切替を反映しないので組み直す
       const want = st.sel ? meshList.find(m=>m.name===st.sel) : null;
       if(want!==selMesh){
         if(selMesh) setHighlight(selMesh,false);
@@ -371,11 +443,12 @@
       c.matrixWorld.decompose(_o,_q,new THREE.Vector3());
       ray.set(_o, new THREE.Vector3(0,0,-1).applyQuaternion(_q));
       ray.camera = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;   // Sprite の当たり判定に必要
+      ray.layers.enable(PART_LAYER);   // 描かずに当たり判定だけに使う部位も対象にする
     }
     function iconAt(c){ aim(c); return ray.intersectObjects(icons,false)[0] || null; }
     function castFrom(c){   // 手の光線の先で最初に当たる構造（皮膚・脂肪は飛ばす）
       aim(c);
-      const hits=ray.intersectObjects(meshList,false).filter(h=>shown(h.object));
+      const hits=ray.intersectObjects(meshList.filter(shown),false);   // 隠した部位は判定しない
       return hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
     }
     // 手の光線と当たり点を常に見せる。WebXRの没入表示中はHL2が自前の光線を描かないので、
@@ -410,7 +483,7 @@
       clearPick();
       if(!hit){ log('つまみ: 構造なし（光線の先に何もない）'); if(DIAG) showDiag(c,'光線の先に構造なし'); return; }
       pickMesh=hit.object; setHighlight(pickMesh,true);
-      const jp=jpName(pickMesh.name), en=humanize(pickMesh.name);
+      const jp=labelName(pickMesh.name), en=humanize(pickMesh.name);
       labelSprite=makeLabel(jp, en);
       // 札は体の外へ出し、細い線で当たり点と結ぶ。当たり点の真上に出すと隣の臓器を隠して
       //   次を指しにくい（2026-10-03 実機）。左右は見ている人から見て当たり点のある側。
@@ -473,6 +546,7 @@
       try{
         updateManip();                   // 両手=回転＋拡大縮小＋移動
         updatePointers();                // 手の光線と当たり点
+        tickFps();
         syncTick();                      // 共有ルーム（未参加なら何もしない）
         renderer.render(scene,camera);   // 自動回転は廃止（手で掴んで回す）
         if(renderer.xr.isPresenting){
