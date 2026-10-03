@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: つまんで名前 v3（診断つき）");
+    log("版: 光線と点 v4（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -307,13 +307,41 @@
       labelSprite.position.copy(_o).add(new THREE.Vector3(0,0,-0.6).applyQuaternion(_q));
       scene.add(labelSprite);
     }
-    function pickAt(c){
-      if(!modelObj) return;
+    function castFrom(c){   // 手の光線の先で最初に当たる構造（皮膚・脂肪は飛ばす）
       c.updateMatrixWorld(true);
       c.matrixWorld.decompose(_o,_q,new THREE.Vector3());
       ray.set(_o, new THREE.Vector3(0,0,-1).applyQuaternion(_q));
       const hits=ray.intersectObjects(meshList,false).filter(h=>shown(h.object));
-      const hit=hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
+      return hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
+    }
+    // 手の光線と当たり点を常に見せる。WebXRの没入表示中はHL2が自前の光線を描かないので、
+    //   描かないと「どこを指しているか分からない」（2026-10-03 実機で発生）。
+    //   当たり判定は重いので手ごとに約10Hzに間引く。
+    const RAY_LEN=2.0, CAST_MS=100;
+    const pointers=ctrls.map(c=>{
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0),new THREE.Vector3(0,0,-1)]),
+        new THREE.LineBasicMaterial({color:0x7fd4ff, transparent:true, opacity:0.7, depthTest:false}));
+      line.renderOrder=998; line.scale.z=RAY_LEN; c.add(line);
+      const dot=new THREE.Mesh(new THREE.SphereGeometry(0.008,12,8),
+        new THREE.MeshBasicMaterial({color:0xffe200, depthTest:false}));
+      dot.renderOrder=999; dot.visible=false; scene.add(dot);
+      return {c, line, dot, last:0};
+    });
+    function updatePointers(){
+      if(!modelObj) return;
+      const now=performance.now();
+      for(const p of pointers){
+        if(!p.c.visible){ p.dot.visible=false; continue; }   // 手が見えていない
+        if(now-p.last<CAST_MS) continue;
+        p.last=now;
+        const hit=castFrom(p.c);
+        if(hit){ p.dot.position.copy(hit.point); p.dot.visible=true; p.line.scale.z=hit.distance; }
+        else   { p.dot.visible=false; p.line.scale.z=RAY_LEN; }
+      }
+    }
+    function pickAt(c){
+      if(!modelObj) return;
+      const hit=castFrom(c);
       clearPick();
       if(!hit){ log('つまみ: 構造なし（光線の先に何もない）'); if(DIAG) showDiag(c,'光線の先に構造なし'); return; }
       pickMesh=hit.object; setHighlight(pickMesh,true);
@@ -357,12 +385,13 @@
     window.__dbg={THREE,VS,camera,root,syncTick,applyState,meshList,camWorld,
       get model(){return modelObj},get room(){return room},
       get wantPose(){return wantPose},get follower(){return follower},get selMesh(){return selMesh},
-      pickAt,ctrls,get pickMesh(){return pickMesh},get labelSprite(){return labelSprite}};
+      pickAt,ctrls,pointers,updatePointers,get pickMesh(){return pickMesh},get labelSprite(){return labelSprite}};
 
     let frames=0;
     renderer.setAnimationLoop(()=>{
       try{
         updateManip();                   // 両手=回転＋拡大縮小＋移動
+        updatePointers();                // 手の光線と当たり点
         syncTick();                      // 共有ルーム（未参加なら何もしない）
         renderer.render(scene,camera);   // 自動回転は廃止（手で掴んで回す）
         if(renderer.xr.isPresenting){
