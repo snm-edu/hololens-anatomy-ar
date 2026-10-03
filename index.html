@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>解剖 AR — 女性全臓器（皮膚・筋肉なし）</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:sans-serif}
+    #log{position:fixed;top:8px;left:8px;right:8px;max-height:38vh;overflow:auto;color:#7CFC00;
+         background:rgba(0,0,0,.55);font:13px/1.4 monospace;white-space:pre-wrap;padding:8px;border-radius:6px;z-index:10}
+    #btn{position:fixed;left:50%;bottom:6%;transform:translateX(-50%);z-index:30;font:bold 34px sans-serif;
+         padding:24px 52px;background:#1060ff;color:#fff;border:none;border-radius:18px;box-shadow:0 6px 24px rgba(0,0,0,.6);
+         text-align:center;line-height:1.3}
+    #cred{position:fixed;bottom:2px;right:6px;color:#888;font:10px monospace;z-index:5}
+  </style>
+</head>
+<body>
+  <div id="log">解剖 AR ローダー（女性・全臓器）</div>
+  <button id="btn" disabled>読み込み中…</button>
+  <div id="cred">Model: HuBMAP/HRA VH_Female — CC BY 4.0</div>
+  <div id="toapp" hidden>
+    <p>このiPad/iPhoneでは、アプリ「AnatomyAR」で開いてください。<br>
+      （このページのAR表示は HoloLens 2 用で、iOS の Safari では動きません）</p>
+    <button id="toappbtn">アプリで開く</button>
+    <p id="toappcode"></p>
+  </div>
+  <script>
+  // 入室QRを iOS 標準のカメラアプリで読むと、このページが Safari で開く。
+  // iPhone/iPad の Safari は WebXR に対応しておらず下の読み込みは無駄になるので、
+  // アプリ（anatomyar://）へ引き渡す。HoloLens 2 はこの分岐に入らず従来どおり動く。
+  //
+  // ⚠️ Universal Links（確認タップ無しでアプリが開く）は使えない。Apple の設定ファイルは
+  //   ドメイン直下に application/json で置く必要があるが、GitHub Pages は拡張子なしのファイルを
+  //   application/octet-stream で返し、ヘッダを変える手段が無い（2026-09-12 に実測）。
+  //   独自ドメインを用意できたら Universal Links へ移行する。
+  (function () {
+    var params = new URLSearchParams(location.search);
+    var room = params.get('room');
+    // 解除/教員コードの自動登録用（2026-09-15追加）。長い文字列の手入力・コピペを
+    // 200人規模にさせると誤入力の温床になるため、QRを見せるだけで登録まで終わらせる。
+    var code = params.get('code');
+    var ua = navigator.userAgent;
+    var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); // iPadOS はMacを名乗る
+    if (!isIOS) return;
+
+    var target, fallbackText;
+    if (code) {
+      target = 'anatomyar://register?code=' + encodeURIComponent(code);
+      fallbackText = 'アプリが開かないときは、アプリの「コード管理」に届いた文字列を貼り付けてください';
+    } else if (room && /^[A-Za-z0-9_-]{4,32}$/.test(room)) {
+      target = 'anatomyar://join?room=' + encodeURIComponent(room);
+      // 他校が自校のCloudflareアカウントへ独立に展開したときの中継ヒント。
+      // ここで拾わずに捨てると、アプリへ引き渡した瞬間に既定（札幌看護）の中継へ
+      // 誤って固定される（2026-09-13・他校展開の配線修正）。
+      var relay = params.get('relay');
+      if (relay && /^[a-z0-9-]{1,63}$/.test(relay)) {
+        target += '&relay=' + encodeURIComponent(relay);
+      }
+      fallbackText = 'アプリが開かないときは、アプリの「コードで入る」に ' + room + ' を入力してください';
+    } else {
+      return;
+    }
+
+    var box = document.getElementById('toapp');
+    box.hidden = false;
+    box.style.cssText = 'position:fixed;inset:0;z-index:100;background:#000;color:#fff;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;' +
+      'font:16px/1.6 sans-serif;text-align:center;padding:24px';
+    var btn = document.getElementById('toappbtn');
+    btn.style.cssText = 'font:bold 22px sans-serif;padding:18px 36px;background:#1060ff;color:#fff;' +
+      'border:none;border-radius:14px';
+    document.getElementById('toappcode').textContent = fallbackText;
+    btn.onclick = function () { location.href = target; };
+    // 一度だけ自動で試す。アプリが入っていれば iOS が「開きますか？」と聞く。
+    setTimeout(function () { location.href = target; }, 300);
+  })();
+  </script>
+  <script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  } }
+  </script>
+  <script type="module">
+    const logEl=document.getElementById('log'), btn=document.getElementById('btn');
+    const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
+    log("boot "+navigator.userAgent.slice(0,50));
+    addEventListener('error', e=>log('JSERR: '+(e.message||e)));
+    addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
+
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    import { readRoomParams } from './sync/config.js';
+    import { createRoom } from './sync/room.js';
+    import { makeViewSync } from './sync/viewsync.js';
+    log("three r"+THREE.REVISION+" import OK");
+    if('xr' in navigator) navigator.xr.isSessionSupported('immersive-ar').then(s=>log("immersive-ar supported: "+s));
+
+    const renderer=new THREE.WebGLRenderer({antialias:false, alpha:true});
+    renderer.setClearColor(0x000000,0);
+    renderer.setSize(innerWidth,innerHeight);
+    renderer.xr.enabled=true; renderer.xr.setReferenceSpaceType('local');
+    document.body.appendChild(renderer.domElement);
+    const scene=new THREE.Scene();
+    const camera=new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.01,50);
+    scene.add(new THREE.HemisphereLight(0xffffff,0x223344,2.5));
+    const dir=new THREE.DirectionalLight(0xffffff,2.0); dir.position.set(1,2,1); scene.add(dir);
+
+    const root=new THREE.Group(); scene.add(root);   // 回転・配置用の親
+    let modelObj=null, radiusWorldBase=1, radiusLocal=1;   // 共有ルームの視点計算に使う
+    let follower=false;                                    // 参加者モード（先生の操作に追従）
+    const meshList=[];                                     // 表示状態の同期に使う全メッシュ
+
+    // === 操作: 片手=平行移動のみ(回転しない) / 両手=回転＋拡大縮小＋移動 ===
+    //   重要: 片手はアタッチ(reparent)しない＝手首の傾きを拾わない。これで持ち替えても
+    //   モデルの向きが保たれ、両手回転を継続できる(=つまみ直しで明後日に回る不具合の根治)。
+    //   回転ゲイン: 手の回転角×ROT_GAIN(手60°→モデル180°)。背面に届きやすく。
+    const ROT_GAIN=3;
+    const ctrls=[renderer.xr.getController(0), renderer.xr.getController(1)];
+    ctrls.forEach(c=>{ c.userData.sel=false; scene.add(c); });
+    let one=null, two=null;   // 片手/両手の基準値(rootは常にsceneの子・reparentしない)
+    const yawOf=(a,b)=>Math.atan2(b.position.x-a.position.x, b.position.z-a.position.z);
+    const midOf=(a,b)=>a.position.clone().add(b.position).multiplyScalar(0.5);
+
+    function enterOne(c){   // 基準を都度取り直す＝持ち替えでもジャンプしない
+      two=null;
+      one={ c, handStart:c.position.clone(), posStart:root.position.clone() };
+      log('片手: 移動');
+    }
+    function enterTwo(a,b){
+      one=null;
+      two={ dist0:Math.max(1e-4,a.position.distanceTo(b.position)), scale0:root.scale.x,
+            prevYaw:yawOf(a,b), accum:0, rootYaw0:root.rotation.y,
+            mid0:midOf(a,b), pos0:root.position.clone() };
+      log('両手: 回転＋拡大縮小');
+    }
+    function refresh(){
+      const sel=ctrls.filter(c=>c.userData.sel);
+      // 参加者(follower)は回転・拡縮を先生に任せる。自分の手元では「置き場所」だけ動かせる。
+      if(sel.length>=2 && !follower){ if(!two) enterTwo(sel[0],sel[1]); }
+      else if(sel.length>=1){ enterOne(sel[0]); }
+      else { one=null; two=null; log('離した'); }
+    }
+    const onStart=(e)=>{ e.target.userData.sel=true; refresh(); };
+    const onEnd  =(e)=>{ e.target.userData.sel=false; refresh(); };
+    ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
+
+    function updateManip(){
+      if(two){
+        const sel=ctrls.filter(c=>c.userData.sel);
+        if(sel.length<2) return;
+        const a=sel[0], b=sel[1];
+        const dist=Math.max(1e-4, a.position.distanceTo(b.position));
+        // 拡大縮小(両手の距離)
+        root.scale.setScalar(Math.min(8, Math.max(0.05, two.scale0 * dist/two.dist0)));
+        // 回転(両手の角度・±π折返しをアンラップ＋ゲイン増幅)
+        const yaw=yawOf(a,b);
+        let d=yaw-two.prevYaw; if(d>Math.PI)d-=2*Math.PI; else if(d<-Math.PI)d+=2*Math.PI;
+        two.accum+=d*ROT_GAIN; two.prevYaw=yaw;
+        root.rotation.y=two.rootYaw0+two.accum;
+        // 移動(両手の中点)
+        root.position.copy(two.pos0).add(midOf(a,b).sub(two.mid0));
+      } else if(one){
+        if(!one.c.userData.sel){ one=null; return; }
+        // 平行移動のみ(向き・大きさは不変)
+        root.position.copy(one.posStart).add(one.c.position.clone().sub(one.handStart));
+      }
+    }
+
+    const draco=new DRACOLoader();
+    draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+    const loader=new GLTFLoader(); loader.setDRACOLoader(draco);
+
+    const GLB='vendor/anatomy.glb?v=3';   // 相対パス（GitHub Pagesサブパス対応）。再変換時にvを上げる
+    log("GLB 読み込み開始 "+GLB);
+    let _dlPct=-1;
+    loader.load(GLB,
+      (gltf)=>{
+        const model=gltf.scene;
+        // 非表示: 乳房(乳腺/乳頭/乳輪＋胸の脂肪fat_L/R)・臍帯複合・胎盤(白)・子宮一式(赤)。
+        //   皮膚(青い殻)は表示維持。fat_L/R は Z+0.35〜0.53(胸高)＝乳房脂肪なので乳房として除去。
+        // 注: 'uterus|uterine' 限定で outer_cortex_of_kidney(=腎皮質)への誤爆を回避。
+        //     Allen_mammillary_*=脳の乳頭体・*_spinal_cord_*=脊髄 も対象外。
+        const HIDE=/mammary_lobes|_nipple_|_areola|_fat_[LR]$|umbilical_cord|umbilical_artery|umbilical_vein|placenta|amnion|chorionic_plate|basal_plate|uterus|uterine|uterosacral|uterovesical/i;
+        let tris=0, meshes=0, hidden=0; const hiddenNames=[];
+        model.traverse(o=>{
+          if(o.isMesh){
+            meshes++;
+            meshList.push(o);
+            // AR で前面を塞ぐ構造はこの端末の方針として常に隠す（共有ルームでも上書きさせない）
+            if(HIDE.test(o.name)){ o.userData.forceHidden=true; o.visible=false; hidden++; if(hiddenNames.length<14) hiddenNames.push(o.name); return; }
+            const g=o.geometry; tris += g.index? g.index.count/3 : (g.attributes.position? g.attributes.position.count/3:0);
+            // 加算表示で見えるよう自発光ブースト＋両面
+            const mats=Array.isArray(o.material)?o.material:[o.material];
+            for(const mt of mats){ if(mt){ mt.emissive=mt.color? mt.color.clone():new THREE.Color(0x888888); mt.emissiveIntensity=0.35; mt.side=THREE.DoubleSide; mt.metalness=0.0; mt.roughness=0.9; } }
+            const f=Array.isArray(o.material)?o.material[0]:o.material;   // 選択ハイライトの復帰用
+            o.userData.baseEm = f&&f.emissive ? f.emissive.clone() : new THREE.Color(0x000000);
+            o.userData.baseEI = (f&&f.emissiveIntensity!=null) ? f.emissiveIntensity : 1;
+          }
+        });
+        log(`非表示 ${hidden}件: ${hiddenNames.join(', ')}`);
+        // 自動フィット: 高さ0.7mへスケール→正面0.9m・目線やや下に配置
+        const box=new THREE.Box3().setFromObject(model);
+        const size=new THREE.Vector3(), center=new THREE.Vector3();
+        box.getSize(size); box.getCenter(center);
+        const h=Math.max(size.x,size.y,size.z)||1;
+        const s=0.7/h; model.scale.setScalar(s);
+        model.position.sub(center.multiplyScalar(s));   // 原点中心化
+        root.add(model);
+        modelObj=model; radiusLocal=h*0.5; radiusWorldBase=h*0.5*s;   // 共有ルーム用
+        // local座標は原点=頭の位置。目線やや下・正面0.8mに配置
+        root.position.set(0, -0.1, -0.8);
+        log(`✓ GLB読込完了 meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
+        log('操作: 片手=移動 ／ 両手でつまみ、片手を手前・片手を奥へ回すと回転(背面も)・広げると拡大');
+        log('※背面まで届かない時は一度離してつまみ直すと続きから回せます');
+        btn.disabled=false; btn.textContent='▶ ENTER AR';
+        if(pendingState){ try{ applyState(pendingState); log('先生の表示状態を反映しました'); }catch(e){} }
+      },
+      (ev)=>{ if(ev.total){ const p=Math.round(ev.loaded/ev.total*100); if(p>=_dlPct+25||p===100){ _dlPct=p; log('DL '+p+'%'); } } },
+      (err)=>{ log('✗ GLB読込エラー: '+(err.message||err)); }
+    );
+
+    // ===== 共有ルーム =====
+    // QRに ?room=XXXX&role=f を入れておけば、HL2は見つめてOpenするだけで参加できる（打鍵ゼロ）。
+    const VS=makeViewSync(THREE), RP=readRoomParams();
+    let room=null, wantPose=null, lastSent=0, lastJson='', lastPoseSent=0;
+    const _v=new THREE.Vector3();
+    const camWorld=()=>{
+      const c = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      return c.getWorldPosition(_v.clone());
+    };
+    // 注目点マーカー。モデルの子にする＝端末ごとに配置や縮尺が違っても同じ点を指せる
+    let ptrMesh=null;
+    function showPointer(arr){
+      if(!modelObj) return;
+      if(!ptrMesh || ptrMesh.parent!==modelObj){
+        ptrMesh=new THREE.Mesh(new THREE.SphereGeometry(radiusLocal*0.022,16,12),
+          new THREE.MeshBasicMaterial({color:0x39a0ff, depthTest:false}));
+        ptrMesh.renderOrder=999; modelObj.add(ptrMesh);
+      }
+      if(!arr){ ptrMesh.visible=false; return; }
+      ptrMesh.position.fromArray(arr); ptrMesh.visible=true;
+    }
+    // 先生が「今かくれている構造」を名前で送ってくるので、そのまま反映する。
+    // ただし forceHidden（ARで前面を塞ぐ構造）はこの端末の方針として常に隠したまま。
+    let selMesh=null, pendingState=null;
+    function setHighlight(o,on){
+      const mats=Array.isArray(o.material)?o.material:[o.material];
+      for(const m of mats){ if(!m||!m.emissive) continue;
+        if(on){ m.emissive.setHex(0x2b6cff); m.emissiveIntensity=0.9; }
+        else { if(o.userData.baseEm) m.emissive.copy(o.userData.baseEm); m.emissiveIntensity=o.userData.baseEI??1; } }
+    }
+    function applyState(st){
+      // 入室直後はまだGLB読込中で meshList が空。ここで捨てると学生は先生の表示状態を
+      // 受け取れないまま既定の姿を見続けることになるので、必ず保持して読込後に適用する。
+      pendingState=st;
+      if(!meshList.length) return;
+      const hid=new Set(st.hid||[]);
+      for(const m of meshList) m.visible = !m.userData.forceHidden && !hid.has(m.name);
+      const want = st.sel ? meshList.find(m=>m.name===st.sel) : null;
+      if(want!==selMesh){
+        if(selMesh) setHighlight(selMesh,false);
+        selMesh=want||null;
+        if(selMesh){ setHighlight(selMesh,true); log('先生が選択: '+selMesh.name); }
+      }
+    }
+    function syncTick(){
+      if(!room || !modelObj) return;
+      if(follower){
+        if(!wantPose) return;
+        VS.applyTurntable({root, camWorld:camWorld()}, wantPose, 0.2);
+        showPointer(wantPose.p||null);
+      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
+        const now=performance.now();
+        if(now-lastSent<83) return;   // 12Hz
+        lastSent=now;
+        const p=VS.encode({model:modelObj, centerWorld:root.getWorldPosition(new THREE.Vector3()),
+                           radiusWorld:radiusWorldBase*root.scale.x, camWorld:camWorld()});
+        // 静止中は送らない。ただし2秒に1度は必ず送る（待機中に入室した端末にも視点を届ける）
+        const j=JSON.stringify(p);
+        if(j!==lastJson || now-lastPoseSent>2000){ lastJson=j; lastPoseSent=now; room.sendPose(p); }
+      }
+    }
+    if(RP.enabled && RP.room){
+      room=createRoom({ url:RP.url, room:RP.room,
+        onStatus:(s)=>log('共有ルーム['+RP.room+']: '+s),
+        // 誰も操作権を持っていない間は自分で自由に回せる（1台だけで入室したときに固まらない）
+        onRole:(isP,pid)=>{ follower=!!pid && !isP;
+          log(follower?'参加者モード（先生の操作に同期／片手で置き場所だけ移動可）'
+                      :'自由操作モード（両手で回転・拡縮できます。動かすとあなたが操作権を持ちます）'); },
+        onPose:(d)=>{ wantPose=d; },
+        onState:(d)=>{ try{ applyState(d); }catch(e){ log('state適用エラー: '+(e.message||e)); } } });
+      if(RP.role==='presenter') room.claim();
+    }
+    window.__dbg={THREE,VS,camera,root,syncTick,applyState,meshList,camWorld,
+      get model(){return modelObj},get room(){return room},
+      get wantPose(){return wantPose},get follower(){return follower},get selMesh(){return selMesh}};
+
+    let frames=0;
+    renderer.setAnimationLoop(()=>{
+      try{
+        updateManip();                   // 両手=回転＋拡大縮小＋移動
+        syncTick();                      // 共有ルーム（未参加なら何もしない）
+        renderer.render(scene,camera);   // 自動回転は廃止（手で掴んで回す）
+        if(renderer.xr.isPresenting){
+          if(frames===0) log("✓ AR初フレーム描画");
+          if(frames>0 && frames%300===0) log("AR描画中 frame="+frames);
+          frames++;
+        }
+      }catch(err){ log("RENDER ERR: "+(err.message||err)); }
+    });
+
+    btn.addEventListener('click', async ()=>{
+      btn.disabled=true; btn.innerHTML='AR起動中…<br><span style="font-size:20px;font-weight:normal">（許可が出たら承認）</span>';
+      log("requestSession 呼び出し…（初回は「許可/Allow」ダイアログが出ます。air-tapで承認）");
+      try{
+        const req=navigator.xr.requestSession('immersive-ar',{requiredFeatures:['local']});
+        const to=new Promise((_,rej)=>setTimeout(()=>rej(new Error('TIMEOUT: 許可ダイアログ未承認の可能性（視界内のAllow/はいをair-tap）')),20000));
+        const s=await Promise.race([req,to]);
+        log("✓ requestSession成功");
+        await renderer.xr.setSession(s);
+        log("✓ setSession完了（AR内にモデル）");
+        s.addEventListener('end',()=>{log("session終了 frames="+frames);btn.disabled=false;btn.textContent='▶ ENTER AR';btn.style.display='';});
+        btn.style.display='none';
+      }catch(e){ log("✗ AR起動エラー: "+(e.name||'')+": "+(e.message||e)); btn.disabled=false; btn.textContent='▶ 再試行'; }
+    });
+  </script>
+</body>
+</html>

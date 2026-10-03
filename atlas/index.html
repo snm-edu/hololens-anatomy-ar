@@ -1,0 +1,1181 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>解剖アトラス（札幌看護医療専門学校）</title>
+  <meta name="theme-color" content="#141622" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="解剖アトラス" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <style>
+    :root{ --bg:#141622; --panel:rgba(22,26,42,.94); --line:#2b3350; --txt:#e8ecf7; --sub:#93a0c0; --acc:#3b82f6; }
+    *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+    html,body{ margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--txt);
+      font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif; }
+    #c{ position:fixed; inset:0; display:block; touch-action:none; z-index:1; }
+    /* カメラ透過AR: 背景は DOM の <video> を重ねる。WebGL の videoテクスチャ取込は
+       WebKit に既知の重い欠陥があるため、Core Animation に合成させるのが正解。 */
+    #cam{ position:fixed; inset:0; width:100%; height:100%; object-fit:cover; z-index:0;
+      display:none; background:#000; }
+    body.ar #cam{ display:block; }
+    body.ar #hint{ bottom:calc(env(safe-area-inset-bottom) + 72px); }   /* ARバーの上へ逃がす */
+    #arbar{ position:fixed; z-index:20; left:50%; transform:translateX(-50%);
+      bottom:calc(env(safe-area-inset-bottom) + 14px); display:none; gap:8px; }
+    body.ar #arbar{ display:flex; }
+    #arbar .btn{ font-size:14px; padding:12px 16px; }
+    #markerMsg{ position:fixed; z-index:20; left:50%; top:50%; transform:translate(-50%,-50%);
+      display:none; background:rgba(0,0,0,.68); color:#fff; font-size:15px; font-weight:700;
+      padding:14px 20px; border-radius:14px; pointer-events:none; }
+    body.marker-lost #markerMsg{ display:block; }
+    /* 認識できているか・寄りすぎていないかを常に出す（模型が視界外でも状況が分かるように） */
+    #markerHud{ position:fixed; z-index:21; left:50%; transform:translateX(-50%);
+      bottom:calc(env(safe-area-inset-bottom) + 116px); display:none;
+      font-size:12px; font-weight:700; padding:7px 14px; border-radius:20px;
+      background:rgba(0,0,0,.62); color:#fff; white-space:nowrap; pointer-events:none; }
+    body.marker-on #markerHud{ display:block; }
+    #top{ position:fixed; top:0; left:0; right:0; z-index:20; display:flex; align-items:center; gap:8px;
+      padding:calc(env(safe-area-inset-top) + 8px) 12px 8px; background:linear-gradient(#141622ee,#14162200); }
+    #top h1{ font-size:16px; margin:0; font-weight:700; flex:0 0 auto; }
+    #top .sp{ flex:1; }
+    .btn{ appearance:none; border:1px solid var(--line); background:var(--panel); color:var(--txt);
+      font-size:15px; font-weight:600; padding:10px 14px; border-radius:12px; min-height:44px; }
+    .btn:active{ background:#20263f; }
+    .btn.acc{ background:var(--acc); border-color:var(--acc); color:#fff; }
+    #panel{ position:fixed; z-index:19; top:0; bottom:0; left:0; width:min(82vw,340px);
+      transform:translateX(-102%); transition:transform .22s ease; background:var(--panel);
+      border-right:1px solid var(--line); padding:calc(env(safe-area-inset-top) + 60px) 0 env(safe-area-inset-bottom);
+      display:flex; flex-direction:column; }
+    #panel.open{ transform:none; }
+    #panel .hd{ padding:6px 16px 10px; display:flex; align-items:center; gap:8px; }
+    #panel .hd b{ font-size:15px; } #panel .hd .mini{ font-size:13px; color:var(--sub); }
+    #panel .allnone{ display:flex; gap:8px; padding:0 16px 10px; }
+    #panel .allnone button{ flex:1; font-size:13px; padding:8px; min-height:38px; }
+    #panel .srch{ padding:0 16px 10px; display:flex; align-items:center; gap:8px; }
+    #panel .srch input{ flex:1; min-height:40px; border-radius:10px; border:1px solid var(--line);
+      background:#0f1220; color:var(--txt); font-size:15px; padding:8px 12px; }
+    #panel .srch input::placeholder{ color:#5a668a; }
+    #list{ overflow:auto; -webkit-overflow-scrolling:touch; padding:0 8px 16px; }
+    .row{ display:flex; align-items:center; gap:12px; padding:12px 10px; border-radius:12px; }
+    .row:active{ background:#20263f; }
+    .row .sw{ width:26px; height:26px; border-radius:8px; border:2px solid var(--line); flex:0 0 auto;
+      display:flex; align-items:center; justify-content:center; font-size:16px; color:#fff; }
+    .row.on .sw{ background:var(--acc); border-color:var(--acc); }
+    .row .nm{ flex:1; font-size:15px; font-weight:600; }
+    .row .ct{ font-size:12px; color:var(--sub); }
+    .dot{ width:12px; height:12px; border-radius:50%; flex:0 0 auto; }
+    #sel{ position:fixed; z-index:20; left:12px; right:12px; bottom:calc(env(safe-area-inset-bottom) + 12px);
+      background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; display:none; }
+    #sel.show{ display:block; }
+    #sel .nm{ font-size:18px; font-weight:700; }
+    #sel .raw{ font-size:12px; color:var(--sub); margin-top:2px; word-break:break-all; }
+    #sel .chip{ display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--sub); margin-top:6px; }
+    #sel .def{ font-size:13px; color:var(--txt); margin-top:8px; line-height:1.55; max-height:22vh; overflow:auto; }
+    #sel .acts{ display:flex; gap:8px; margin-top:12px; }
+    #sel .acts .btn{ flex:1; font-size:14px; padding:11px; }
+    #load{ position:fixed; inset:0; z-index:30; background:var(--bg); display:flex; flex-direction:column;
+      align-items:center; justify-content:center; gap:14px; }
+    #load .ring{ width:52px; height:52px; border:5px solid #2b3350; border-top-color:var(--acc);
+      border-radius:50%; animation:spin 1s linear infinite; }
+    @keyframes spin{ to{ transform:rotate(360deg); } }
+    #load .t{ font-size:15px; color:var(--sub); }
+    #hint{ position:fixed; z-index:18; left:50%; bottom:calc(env(safe-area-inset-bottom) + 14px);
+      transform:translateX(-50%); font-size:12px; color:var(--sub); background:var(--panel);
+      border:1px solid var(--line); border-radius:20px; padding:8px 14px; text-align:center; }
+    .fadeout{ opacity:0; transition:opacity .5s; pointer-events:none; }
+    /* モデルに被らないよう右上に寄せる（中央だと本体が見えなくなる） */
+    #share{ position:fixed; z-index:22; right:12px; left:auto; top:calc(env(safe-area-inset-top) + 96px);
+      width:min(92vw,360px); background:var(--panel); border:1px solid var(--line);
+      border-radius:16px; padding:14px; display:none; box-shadow:0 8px 32px rgba(0,0,0,.5); }
+    #share.show{ display:block; }
+    #share .hd{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    #share .hd b{ font-size:15px; } #share .hd .st{ margin-left:auto; font-size:12px; color:var(--sub); }
+    #share .fld{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    #share .fld label{ font-size:13px; color:var(--sub); width:56px; flex:0 0 auto; }
+    #share .fld input{ flex:1; min-height:40px; border-radius:10px; border:1px solid var(--line);
+      background:#0f1220; color:var(--txt); font-size:16px; padding:8px 12px; letter-spacing:.1em; }
+    #share .acts{ display:flex; gap:8px; }
+    #share .acts .btn{ flex:1; font-size:14px; padding:11px; }
+    #share .mini{ font-size:12px; color:var(--sub); margin-top:10px; line-height:1.55; }
+    #shareQRwrap{ display:none; margin-top:12px; text-align:center; }
+    #shareQRwrap.show{ display:block; }
+    #shareQR{ width:186px; height:186px; background:#fff; border-radius:12px; padding:12px; box-sizing:border-box; }
+    #shareQRwrap .cap{ font-size:12px; color:var(--sub); margin-top:6px; }
+    /* AR中の共有診断（版・接続・役割・受信数）。原因の遠隔切り分け用。 */
+    #arStat{ display:none; position:fixed; z-index:23; left:12px; top:calc(env(safe-area-inset-top) + 96px);
+      font-size:11px; line-height:1.5; color:#dfe6f5; background:rgba(10,13,22,.62);
+      padding:6px 9px; border-radius:9px; letter-spacing:.02em; pointer-events:none; }
+    body.ar #arStat{ display:block; }
+    #pill{ position:fixed; z-index:21; right:12px; top:calc(env(safe-area-inset-top) + 58px);
+      font-size:12px; font-weight:700; padding:6px 12px; border-radius:20px; display:none;
+      border:1px solid var(--line); background:var(--panel); }
+    #pill.show{ display:block; }
+    #pill .d{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  </style>
+</head>
+<body>
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="c"></canvas>
+  <div id="arbar">
+    <button class="btn" id="markerBtn">🎯 マーカー</button>
+    <button class="btn" id="recenterBtn">正面に置き直す</button>
+    <button class="btn" id="arExitBtn">AR終了</button>
+  </div>
+  <div id="markerMsg">マーカーを映してください</div>
+  <div id="markerHud"></div>
+  <div id="arStat"></div>
+  <div id="top">
+    <button class="btn" id="menuBtn">☰ 系統</button>
+    <h1>解剖アトラス</h1>
+    <div class="sp"></div>
+    <button class="btn" id="passBtn">📷 現実に重ねる</button>
+    <button class="btn" id="arBtn" style="display:none">🧍 実物大AR</button>
+    <button class="btn" id="shareBtn">🔗 共有</button>
+    <button class="btn" id="dissectBtn">✂ 解剖</button>
+    <button class="btn" id="resetBtn">リセット</button>
+  </div>
+  <div id="pill"><span class="d"></span><span id="pillT">—</span></div>
+  <div id="share">
+    <div class="hd"><b>共有ルーム</b><span class="st" id="shareSt">未接続</span></div>
+    <div class="fld"><label>ルーム</label><input id="roomCode" type="text" autocapitalize="characters" autocomplete="off" placeholder="AB12CD" /></div>
+    <div class="acts">
+      <button class="btn acc" id="startBtn">👩‍🏫 先生として開始</button>
+      <button class="btn" id="joinBtn">🙋 学生として参加</button>
+    </div>
+    <div class="acts" style="margin-top:8px">
+      <button class="btn" id="claimBtn">操作権を取る</button>
+      <button class="btn" id="leaveBtn">退出</button>
+    </div>
+    <div id="shareQRwrap">
+      <img id="shareQR" src="./vendor/room-qr.svg" alt="学生入室QR" />
+      <div class="cap" id="shareQRcap">学生はこのQRを読む → 参加者として自動入室</div>
+    </div>
+    <div class="mini" id="shareHint"></div>
+  </div>
+  <div id="panel">
+    <div class="hd"><b>ボディシステム</b><span class="mini" id="sysCount"></span></div>
+    <div class="allnone"><button class="btn" id="allBtn">すべて表示</button><button class="btn" id="noneBtn">すべて非表示</button></div>
+    <div class="srch"><input id="searchBox" type="search" placeholder="構造を検索（肝臓 / liver …）" /><span class="mini" id="searchCount"></span></div>
+    <div id="list"></div>
+  </div>
+  <div id="sel">
+    <div class="nm" id="selName">—</div>
+    <div class="raw" id="selRaw"></div>
+    <div class="chip" id="selSys"></div>
+    <div class="def" id="selDef"></div>
+    <div style="font-size:10px;color:#5a668a;margin-top:6px">※名称・定義はAI生成の教育用参考（要教員確認）</div>
+    <div class="acts">
+      <button class="btn" id="hideBtn">隠す</button>
+      <button class="btn" id="fadeBtn">フェード</button>
+      <button class="btn" id="isoBtn">単独</button>
+      <button class="btn" id="closeSel">閉じる</button>
+    </div>
+  </div>
+  <div id="hint">1本指=回転 ／ 2本指=移動 ／ ピンチ=拡大 ／ タップ=選択</div>
+  <div id="load"><div class="ring"></div><div class="t" id="loadT">モデル読み込み中…</div></div>
+  <!-- AR Quick Look 起動用。iPad/iPhone の Safari は WebXR に非対応で、現実空間に等身大で
+       置ける経路はこれだけ。⚠️Appleの仕様上 <a rel="ar"> の子は <img> ただ1つ、かつ最初の子で
+       なければならない（div で包む・2つ目に置くと黙って単なるダウンロードに落ちる）。
+       画面外に置いてボタンから click() で起動する（ユーザー操作が必須のため）。 -->
+  <a id="arLink" rel="ar" href="../anatomy.usdz" style="position:fixed;left:-9999px;top:0"><img id="arImg" src="" alt="解剖モデルを実物大ARで見る" /></a>
+
+  <script src="dict.js"></script>
+  <script type="importmap">
+  { "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/jsm/" } }
+  </script>
+  <script type="module">
+    if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('./sw.js'); } catch(e){} }
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+    import { readRoomParams } from '../sync/config.js';
+    import { createRoom } from '../sync/room.js';
+    import { makeViewSync, HOME_ZOOM } from '../sync/viewsync.js';
+
+    // ===== システム分類（モデル別・優先順で先にマッチ。Blenderで全メッシュ検証済み） =====
+    // 女性 = HuBMAP VH_Female（未分類0）
+    const SYS_FEMALE = [
+      { key:'eye', label:'眼', color:'#7ec8ff', re:/cornea|sclera|iris|pupil|_lens_|zonular|ciliary|aqueous_humor|vitreous|retina|macula|fovea|ora_serrata|optic_choroid|optic_disc|optic_nerve|optic_chiasm|optic_tract|optic_radiation|conjunctiva|extraocular|lacrimal|eyelid|eyelash|trabecular_meshwork/i },
+      { key:'skin_fat', label:'皮膚・脂肪', color:'#e8c39e', re:/(^|_)skin$|_fat_[lr]$|_fat$|subcutaneous/i },
+      { key:'reproductive', label:'生殖器', color:'#f38fb0', re:/uterus|uterine|uterosacral|uterovesical|ovary|ovarian|vagina|cervix|cervico|cervical_os|placenta|amnion|chorionic|basal_plate|mammary|nipple|areola|umbilical|broad_ligament|fallopian|round_ligament_of_uterus|clitoris|labi|cornua|mesosalpinx|mesovarium|lactiferous|suspensory_ligaments/i },
+      { key:'nervous', label:'神経・脳', color:'#f2d24b', re:/^allen_|spinal_cord|brain|cerebr|cerebell|thalamus|hypothalamus|_gyrus|sulcus_|ventricle|nucleus|nerve|ganglion|pons|medulla_oblongata|midbrain|dura_mater|arachnoid|pia_mater|meninge/i },
+      { key:'muscular', label:'筋', color:'#d0463c', re:/rectus_femoris|quadriceps/i },
+      { key:'skeletal', label:'骨格', color:'#eae3d2', re:/vertebra|sacrum|coccyx|pelvi|ilium|ischium|pubis|femur|femoral|patella|tibia|fibula|_rib|sternum|clavicle|scapula|humerus|radius|ulna|carpal|metacarpal|phalan|tarsal|metatarsal|skull|mandible|maxilla|cranium|bone|hip_bone|condyle|intercondylar|cruciate|meniscus|articular_cartilage|epicondylar|perichondular|enthesis|ligament_of_knee|anterolateral_ligament|collateral_ligament|trochlear_groove|C[1-8]_segment|first_.*(thoracic|lumbar|sacral)|thoracic_spinal|lumbar_spinal|sacral_spinal|thoracic_vertebra|_segment_of_.*(cervical|thoracic|lumbar|sacral)/i },
+      { key:'cardiovascular', label:'循環器', color:'#e0524d', re:/artery|arterial|aorta|aortic|vein|venous|vena_cava|cava|atrium|cardiac|coronary|heart|valve|myocard|capillary|vascul|portal|celiac_trunk|pulmonary_trunk|interventricular_septum|marginal_branch|ventricular_branch|_branch$|brachiocephalic|drummond/i },
+      { key:'respiratory', label:'呼吸器', color:'#8fd3f4', re:/lung|bronch|trachea|larynx|pharynx|pleura|alveol|nasal|nostril|thyroid_cartilage|cricoid|epiglot|arytenoid_cartilage|corniculate_cartilage|carina|_hilum|hilum_|diaphragm/i },
+      { key:'digestive', label:'消化器', color:'#f0a35e', re:/liver|hepatic|hepato|gallbladder|bile|stomach|gastric|duoden|jejun|jejen|ileum|ileoc|colon|caecum|cecum|appendix|rectum|rectal|anus|anal|pancrea|spleen|splenic|esophag|oesophag|salivary|tongue|intestin|sigmoid|omentum|mesentery|mesocolon|peritone|caudate_lobe|quadrate_lobe|porta_hepatis|ligamentum_venosum|falciform_ligament|cystic_duct|uncinate_process|(anterolateral|inferomedial|superomedial|anteroinferior|anterosuperior|posteroinferior|posterosuperior)_segment/i },
+      { key:'urinary', label:'泌尿器', color:'#b6e3a8', re:/kidney|renal|ureter|bladder|urethra|urinary|nephron|trigone|calyx|calyc/i },
+      { key:'lymphatic', label:'リンパ', color:'#8ad2c0', re:/lymph|thymus|tonsil|^yao_/i },
+    ];
+    // 男性 = Z-Anatomy 全身（未分類≈6%は other へ）
+    const SYS_MALE = [
+      { key:'eye', label:'眼', color:'#7ec8ff', re:/eyeball|cornea|\biris\b|(^|[ _])lens|zonular|ciliary|aqueous|vitreous|retina|sclera|choroid(?!.*plexus)|optic|extraocular|lacrimal|eyelid|eyelash|conjunctiv|pupil|uvea|palpebr|common tendinous ring/i },
+      { key:'skin', label:'皮膚', color:'#e8c39e', re:/(^|[ _.])skin|epidermis|dermis|subcutaneous|\bnail|hair of|eyebrow/i },
+      { key:'nervous', label:'神経・脳', color:'#f2d24b', re:/nerve|brain|cerebr|cerebell|telencephal|diencephal|encephal|white matter|gray matter|grey matter|gyrus|sulcus|thalamus|hypothalam|spinal cord|ganglion|ganglia|plexus|pons|medulla oblongata|midbrain|cortex|nucleus|dura mater|arachnoid|pia mater|meninge|cauda equina|conus medullaris|amygdaloid|commissure|vermis|limbic|fornix|insula|hippocamp|colliculus|peduncle|lemniscus|pallidus|putamen|caudate|claustrum|callosum|capsule\b|flocculus|culmen|declive|dentate|substantia|tegmentum|operculum|cingulate|uncus|lobule|ventricle of|lateral ventricle|third ventricle|fourth ventricle|choroid plexus|olfactory|pyramid|tonsil of cerebellum|geniculate|cuneus|habenula|fasciculus|proprius|intermediate substance/i },
+      { key:'muscular', label:'筋', color:'#d0463c', off:true, re:/muscle|iliotibial tract|tendon|aponeurosis|\bdiaphragm\b|fascia|intermuscular septum|intercostal membrane|linea alba|sphincter|abductor|adductor|flexor|extensor|pronator|supinator|\brotator|levator|depressor|tensor|opponens|constrictor|dilator|gracilis|sartorius|soleus|gastrocnemius|plantaris|popliteus|pectineus|piriformis|gemellus|obturator|quadratus|\bbiceps|triceps|brachialis|brachioradialis|anconeus|deltoid|trapezius|rhomboid|serratus|subscapularis|supraspinatus|infraspinatus|\bteres|latissimus|pectoralis|masseter|temporalis|pterygoid|buccinator|bucinator|orbicularis|zygomaticus|risorius|platysma|mentalis|nasalis|corrugator|procerus|occipitofrontalis|frontalis|occipitalis|sternocleidomastoid|scalene|omohyoid|sternohyoid|sternothyroid|thyrohyoid|digastric|mylohyoid|geniohyoid|stylohyoid|genioglossus|hyoglossus|styloglossus|palatoglossus|iliacus|psoas|gluteus|semitendinosus|semimembranosus|vastus|lumbrical|hypothenar|thenar|palmaris|coracobrachialis|stapedius|tensor tympani|longissimus|spinalis|iliocostalis|multifidus|splenius|erector spinae|coccygeus|puborectalis|pubococcygeus|iliococcygeus|cremaster|dartos|articularis/i },
+      { key:'skeletal', label:'骨格', color:'#eae3d2', re:/\bbone\b|vertebra|\brib\b|sternum|clavicle|scapula|humerus|radius\b|\bulna|carpal|metacarpal|phalan|femur|patella|tibia|fibula|tarsal|metatarsal|skull|cranium|mandible|maxilla|hip bone|ilium|ischium|pubis|sacrum|coccyx|costal cartilage|meniscus|intervertebral|ligament|bursa|joint|articular|cruciate|epicondyl|condyle|malleolus|calcaneus|\btalus|navicular|cuboid|cuneiform|hyoid|ossicle|malleus|incus|stapes|labrum|symphysis|\batlas|\baxis\b|foramen|sesamoid|epiphys|diaphysis|zygomatic|temporal bone|frontal bone|parietal|occipital|ethmoid|sphenoid|nasal bone|lacrimal bone|vomer|palatine|arch of|interosseous membrane|process$|tubercle|tuberosity|trochlea|crest|ramus|periosteum/i },
+      { key:'cardiovascular', label:'循環器', color:'#e0524d', re:/artery|arterial|aorta|aortic|\bvein\b|venous|vena cava|\bcava\b|heart|atrium|left ventricle|right ventricle|ventricle of heart|cardiac|myocard|pericard|coronary|valve|capillary|pulmonary trunk|brachiocephalic|carotid|jugular|portal vein|truncus|cavernous sinus|sagittal sinus|sigmoid sinus|transverse sinus|straight sinus|confluence of sinuses/i },
+      { key:'respiratory', label:'呼吸器', color:'#8fd3f4', re:/lung|bronch|trachea|larynx|laryng|pharynx|pharyng|pleura|alveol|nasal cav|nostril|paranasal|epiglot|vocal|cricoid|arytenoid|thyroid cartilage|corniculate|concha|choana|glottis|auditory tube|nose/i },
+      { key:'digestive', label:'消化器', color:'#f0a35e', re:/liver|hepatic|hepato|gallbladder|bile|stomach|gastric|duoden|jejun|ileum|ileoc|colon|caecum|cecum|appendic|appendix|rectum|anus|anal canal|pancrea|esophag|oesophag|salivary|parotid|submandibular|sublingual|tongue|tooth|teeth|canine|premolar|incisor|molar|gingiva|\blip\b|palate|intestin|sigmoid colon|omentum|mesentery|mesocolon|peritone|lobe of liver|porta hepatis/i },
+      { key:'urinary', label:'泌尿器', color:'#b6e3a8', re:/kidney|renal|ureter|bladder|urethra|urinary|nephron|trigone|calyx|calyc|urachus/i },
+      { key:'reproductive', label:'生殖器', color:'#f38fb0', re:/testis|testicular|epididymis|penis|penile|prostate|scrotum|ductus deferens|vas deferens|seminal|spermatic|glans|corpus cavernosum|corpus spongiosum|bulbourethral|ejaculatory|tunica/i },
+      { key:'lymphatic', label:'リンパ', color:'#8ad2c0', re:/lymph|thymus|tonsil|spleen|\bnode\b|nodes\b|cisterna chyli|thoracic duct/i },
+      { key:'endocrine', label:'内分泌', color:'#c9a0ff', re:/thyroid gland|parathyroid|adrenal|suprarenal|pituitary|hypophysis|pineal|islet/i },
+      { key:'surface', label:'表面・領域', color:'#9aa4bf', off:true, re:/region of|region\b|\bline\b|\bplane\b|abduction|adduction|flexion|extension|rotation|movement|auricle|antihelix|antitragus|tragus|helix|concha of|cochlea|vestibule|semicircular|surface|\bborder\b|\bmargin\b|apex of|prominence|dorsum of|eminence/i },
+    ];
+    const OTHER = { key:'other', label:'その他', color:'#9aa4bf' };
+
+    // 男性(Z-Anatomy)モデルは活用困難につき撤去。女性HuBMAP一本で運用。SYS_MALEは将来用に残置(未使用)。
+    const MODELS = [
+      { key:'female', label:'♀ 女性(臓器)', url:'./vendor/anatomy.glb', systems:SYS_FEMALE,
+        defaultHide:/umbilical_cord|umbilical_artery|umbilical_vein|placenta|amnion|chorionic_plate|basal_plate|mammary_lobes|_nipple_|_areola|_fat_[lr]$/i },
+    ];
+    let curIdx = 0, curModel = MODELS[0];
+    let SYSTEMS = curModel.systems, DEFAULT_HIDE = curModel.defaultHide;
+    let sysByKey = Object.fromEntries([...SYSTEMS, OTHER].map(s=>[s.key,s]));
+    // Z-Anatomy(男性)はglTF書き出しで空白→_/.→_に変換される→スペースへ正規化してから分類
+    function classify(name){ const n = curModel.norm ? name.replace(/[_.]/g,' ') : name; for(const s of SYSTEMS){ if(s.re.test(n)) return s.key; } return 'other'; }
+
+    // 日本語名辞書（主要構造・特異的なものから先に）。検索(日/英)と選択カード表示に使用。
+    const JP = [
+      [/optic_nerve/i,'視神経'],[/optic_chiasm/i,'視交叉'],[/optic_tract/i,'視索'],[/optic_radiation/i,'視放線'],
+      [/cornea/i,'角膜'],[/sclera/i,'強膜'],[/\biris/i,'虹彩'],[/pupil/i,'瞳孔'],[/_lens_|(^|_)lens/i,'水晶体'],
+      [/retina/i,'網膜'],[/macula/i,'黄斑'],[/fovea/i,'中心窩'],[/vitreous/i,'硝子体'],[/ciliary/i,'毛様体'],
+      [/optic_choroid|choroid/i,'脈絡膜'],[/eyelid/i,'眼瞼'],[/lacrimal/i,'涙器'],[/conjunctiva/i,'結膜'],
+      [/extraocular/i,'外眼筋'],[/zonular|suspensory_ligament_of_lens/i,'チン小帯'],[/eyeball/i,'眼球'],
+      [/liver|hepatic/i,'肝臓'],[/gallbladder/i,'胆嚢'],[/cystic_duct|bile/i,'胆管'],[/stomach|gastric/i,'胃'],
+      [/duoden/i,'十二指腸'],[/jejun|jejen/i,'空腸'],[/ileum|ileoc/i,'回腸'],[/caecum|cecum/i,'盲腸'],
+      [/appendix|vermiform/i,'虫垂'],[/colon/i,'結腸'],[/rectum|rectal/i,'直腸'],[/anus|anal/i,'肛門'],
+      [/pancrea/i,'膵臓'],[/spleen|splenic/i,'脾臓'],[/esophag|oesophag/i,'食道'],[/intestin/i,'腸'],
+      [/mesentery|mesocolon/i,'腸間膜'],[/omentum/i,'大網'],[/peritone/i,'腹膜'],
+      [/kidney|renal/i,'腎臓'],[/ureter/i,'尿管'],[/bladder/i,'膀胱'],[/urethra/i,'尿道'],[/calyx|calyc/i,'腎杯'],
+      [/uterus|uterine/i,'子宮'],[/ovary|ovarian/i,'卵巣'],[/vagina/i,'膣'],[/cervix|cervico/i,'子宮頸部'],
+      [/uterine_tube|fallopian|salpinx/i,'卵管'],[/placenta/i,'胎盤'],[/umbilical/i,'臍帯'],[/mammary/i,'乳腺'],
+      [/heart|myocard/i,'心臓'],[/atrium/i,'心房'],[/interventricular|ventricle_of_heart/i,'心室'],
+      [/aorta|aortic/i,'大動脈'],[/vena_cava|_cava/i,'大静脈'],[/coronary/i,'冠動脈'],[/portal/i,'門脈'],
+      [/artery|arterial/i,'動脈'],[/vein|venous/i,'静脈'],[/valve/i,'弁'],
+      [/lung/i,'肺'],[/bronch/i,'気管支'],[/trachea/i,'気管'],[/larynx/i,'喉頭'],[/pharynx/i,'咽頭'],
+      [/pleura/i,'胸膜'],[/diaphragm/i,'横隔膜'],[/alveol/i,'肺胞'],[/thyroid_cartilage/i,'甲状軟骨'],
+      [/cerebell/i,'小脳'],[/brain|cerebr/i,'大脳'],[/spinal_cord/i,'脊髄'],[/thalamus/i,'視床'],
+      [/hypothalam/i,'視床下部'],[/ventricle/i,'脳室'],[/nucleus/i,'神経核'],[/nerve/i,'神経'],
+      [/femur|femoral/i,'大腿骨'],[/patella/i,'膝蓋骨'],[/tibia/i,'脛骨'],[/fibula/i,'腓骨'],
+      [/pelvi|hip_bone/i,'骨盤'],[/ilium/i,'腸骨'],[/ischium/i,'坐骨'],[/pubis/i,'恥骨'],
+      [/vertebra/i,'椎骨'],[/sacrum/i,'仙骨'],[/coccyx/i,'尾骨'],[/_rib|costal/i,'肋骨'],[/sternum/i,'胸骨'],
+      [/cruciate|meniscus|_knee/i,'膝関節'],[/cartilage/i,'軟骨'],[/ligament/i,'靭帯'],
+      [/adrenal|suprarenal_gland/i,'副腎'],[/lymph|^yao_/i,'リンパ'],[/thymus/i,'胸腺'],
+      [/rectus_femoris|quadriceps/i,'大腿四頭筋'],[/(^|_)skin$/i,'皮膚'],[/_fat_/i,'脂肪'],
+    ];
+    // 拡充辞書(dict.js=509構造の日本語名+定義文)を基語キーで参照。dump_base.pyのbase()と同一正規化。
+    function normBase(name){
+      let s = name.replace(/^(VH_F_|Allen_|Yao_)/,'');
+      s = s.replace(/_/g,' ').trim().toLowerCase();
+      s = s.replace(/\b(left|right)\b/g,'');
+      s = s.replace(/\s+(l|r|a|b|c|d|e|f|g|h|i|j|[0-9]+)$/,'');
+      s = s.replace(/\s+/g,' ').trim();
+      return s;
+    }
+    const ANAT = (typeof window!=='undefined' && window.ANAT_DICT) ? window.ANAT_DICT : {};
+    function anat(name){ return ANAT[normBase(name)] || null; }
+    function jpName(raw){ const a=anat(raw); if(a) return a.jp; for(const [re,jp] of JP){ if(re.test(raw)) return jp; } return null; }
+    function defOf(raw){ const a=anat(raw); return a ? a.def : ''; }
+
+    // ===== Three.js =====
+    const canvas = document.getElementById('c');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:true });   // alphaはカメラ透過ARで必須
+    renderer.setPixelRatio(Math.min(devicePixelRatio||1, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    const scene = new THREE.Scene(); scene.background = new THREE.Color(0x141622);
+    const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.01, 100);
+    camera.position.set(0, 0, 2);
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x2a3350, 1.4));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const d1 = new THREE.DirectionalLight(0xffffff, 1.4); d1.position.set(1,1.5,2); scene.add(d1);
+    const d2 = new THREE.DirectionalLight(0xbfd0ff, 0.8); d2.position.set(-1,0.5,-1.5); scene.add(d2);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true; controls.dampingFactor = 0.08; controls.rotateSpeed = 0.9; controls.panSpeed = 0.8;
+    controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+
+    const root = new THREE.Group(); scene.add(root);
+    const pickables = []; const bySystem = {}; let selected = null; let dissect = false;
+    let modelObj = null, radiusWorld = 1, radiusLocal = 1, modelHeightWorld = 1;   // 共有ルームとマーカー配置に使う
+    const HOME = { pos:new THREE.Vector3(), tgt:new THREE.Vector3() };
+    function goHome(){ camera.position.copy(HOME.pos); controls.target.copy(HOME.tgt); controls.update(); }
+
+    const draco = new DRACOLoader(); draco.setDecoderPath('./vendor/draco/');
+    const loader = new GLTFLoader(); loader.setDRACOLoader(draco);
+    const loadEl = document.getElementById('load'), loadT = document.getElementById('loadT');
+
+    function disposeObj(obj){
+      obj.traverse((o)=>{ if(o.isMesh){ o.geometry?.dispose(); const m=Array.isArray(o.material)?o.material:[o.material]; m.forEach(x=>x?.dispose()); } });
+    }
+    function loadModel(def){
+      curModel = def; SYSTEMS = def.systems; DEFAULT_HIDE = def.defaultHide;
+      sysByKey = Object.fromEntries([...SYSTEMS, OTHER].map(s=>[s.key,s]));
+      closeSel();
+      while(root.children.length){ const m=root.children[0]; root.remove(m); disposeObj(m); }
+      pickables.length = 0; for(const k in bySystem) delete bySystem[k];
+      loadEl.style.display='flex'; loadEl.classList.remove('fadeout'); loadT.textContent='モデル読み込み中…';
+      loader.load(def.url,
+        (gltf)=>{
+          const model = gltf.scene;
+          model.traverse((o)=>{
+            if (!o.isMesh) return;
+            o.material = Array.isArray(o.material) ? o.material.map(m=>m.clone()) : o.material.clone();
+            const first = Array.isArray(o.material) ? o.material[0] : o.material;
+            first.side = THREE.DoubleSide;
+            o.userData.sys = classify(o.name);
+            if (DEFAULT_HIDE && DEFAULT_HIDE.test(o.name)) o.visible = false;
+            if (curModel.colorBySystem){   // Z-Anatomyは白のっぺり材質が多い→システム色で塗り分け
+              const sc = (sysByKey[o.userData.sys]||OTHER).color;
+              for (const m of (Array.isArray(o.material)?o.material:[o.material])){
+                if(!m) continue; if(m.color) m.color.set(sc); if(m.emissive) m.emissive.setHex(0x000000);
+                if('metalness' in m) m.metalness=0; if('roughness' in m) m.roughness=0.85;
+              }
+            }
+            o.userData.baseEmissive = (first.emissive ? first.emissive.clone() : new THREE.Color(0x000000));
+            o.userData.baseEI = (first.emissiveIntensity ?? 1);
+            pickables.push(o);
+            (bySystem[o.userData.sys] ||= []).push(o);
+          });
+          const box = new THREE.Box3().setFromObject(model);
+          const center = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+          model.position.sub(center); root.add(model);
+          const radius = Math.max(size.x, size.y, size.z) * 0.5;
+          camera.near = radius/100; camera.far = radius*100; camera.updateProjectionMatrix();
+          // HOME距離は viewsync の HOME_ZOOM を基準にする（HL2側と初期の見かけを揃えるため）
+          const dist = radius * HOME_ZOOM;
+          modelObj = model; radiusWorld = radius; radiusLocal = radius;   // atlasは model.scale=1 なので同値
+          modelHeightWorld = size.y || (radius * 2);                      // マーカー上での実寸合わせに使う
+          HOME.pos.set(0, size.y*0.05, dist); HOME.tgt.set(0,0,0);
+          controls.minDistance = radius*0.15; controls.maxDistance = radius*10; goHome();
+          for (const s of SYSTEMS){ if(s.off){ for(const m of (bySystem[s.key]||[])) m.visible=false; } }  // 既定オフ系統
+          buildTree();
+          pickables.forEach(m=>m.userData.defVis = m.visible);   // 既定の可視状態を記録（検索/リセット復帰用）
+          if (pendingState){ try { applyState(pendingState); } catch(e){} }   // 読込前に届いた先生の表示状態
+          loadEl.classList.add('fadeout'); setTimeout(()=>{ loadEl.style.display='none'; }, 550);
+        },
+        (ev)=>{ if (ev.total) loadT.textContent = 'モデル読み込み中… ' + Math.round(ev.loaded/ev.total*100) + '%'; },
+        (err)=>{ loadT.textContent = '読み込み失敗: ' + (err.message||err); }
+      );
+    }
+
+    // ===== システムツリー =====
+    const listEl = document.getElementById('list');
+    function buildTree(){
+      const present = SYSTEMS.filter(s => (bySystem[s.key]||[]).length);
+      if ((bySystem.other||[]).length) present.push(OTHER);
+      document.getElementById('sysCount').textContent = present.length + '系統 / ' + pickables.length + '構造';
+      listEl.innerHTML = '';
+      for (const s of present){
+        const meshes = bySystem[s.key] || [];
+        const startOn = !s.off;
+        const row = document.createElement('div');
+        row.className = 'row' + (startOn ? ' on' : '');
+        row.dataset.key = s.key;   // 共有ルームの受信時にチェック状態を復元するため
+        row.innerHTML = `<span class="dot" style="background:${s.color}"></span>
+          <span class="sw">${startOn?'✓':''}</span><span class="nm">${s.label}</span><span class="ct">${meshes.length}</span>`;
+        row.addEventListener('click', () => {
+          const on = !row.classList.contains('on');
+          row.classList.toggle('on', on);
+          row.querySelector('.sw').textContent = on ? '✓' : '';
+          for (const m of meshes) m.visible = on;
+          if (selected && !selected.visible) closeSel();
+        });
+        listEl.appendChild(row);
+      }
+    }
+    function setAll(v){
+      for (const m of pickables) m.visible = v;
+      for (const row of listEl.querySelectorAll('.row')){ row.classList.toggle('on', v); row.querySelector('.sw').textContent = v?'✓':''; }
+      if (!v) closeSel();
+    }
+
+    // ===== タップ選択（ドラッグと区別） =====
+    const raycaster = new THREE.Raycaster(), ptr = new THREE.Vector2();
+    let down = null, activePointers = 0;
+    canvas.addEventListener('pointerdown', (e) => { activePointers++; down = (activePointers===1) ? {x:e.clientX,y:e.clientY,t:performance.now()} : null; });
+    canvas.addEventListener('pointercancel', () => { activePointers = Math.max(0, activePointers-1); down = null; });
+    canvas.addEventListener('pointerup', (e) => {
+      const wasSingle = down && activePointers===1;
+      activePointers = Math.max(0, activePointers-1);
+      if (wasSingle){
+        const mv = Math.hypot(e.clientX-down.x, e.clientY-down.y), dt = performance.now()-down.t;
+        if (mv < 12 && dt < 500){
+          const now = performance.now();
+          // ダブルタップで元に戻す（拡大・回転をやり直したいときの逃げ道）
+          if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 40){
+            lastTap = null; closeSel(); resetPose();
+          } else {
+            lastTap = { x:e.clientX, y:e.clientY, t:now };
+            pick(e.clientX, e.clientY);
+          }
+        }
+      }
+      down = null;
+    });
+    let lastTap = null;
+    // 表示モードごとに「元の見え方」へ戻す
+    function resetPose(){
+      if (markerMode){ placeOnMarker(); }              // マーカー上の既定の大きさ・向きへ
+      else if (arMode){ root.scale.setScalar(1); root.quaternion.identity(); recenter(); }
+      else { root.scale.setScalar(1); root.quaternion.identity(); goHome(); }
+    }
+    function pick(cx, cy){
+      if (!root.visible) return;   // マーカー未検出で模型が出ていないときは選択させない
+      const r = canvas.getBoundingClientRect();
+      ptr.x = ((cx-r.left)/r.width)*2 - 1; ptr.y = -((cy-r.top)/r.height)*2 + 1;
+      raycaster.setFromCamera(ptr, camera);
+      const hits = raycaster.intersectObjects(pickables, false).filter(h => h.object.visible);  // Raycasterは非表示を無視するので明示的に除外
+      if (!hits.length){ closeSel(); return; }
+      if (dissect){ hits[0].object.visible = false; }   // 解剖モード: タップで剥がす（皮膚→筋→骨）
+      else { select(hits[0].object); setPointer(hits[0].point); }
+    }
+
+    // ===== 選択・ハイライト・カード =====
+    const selEl = document.getElementById('sel');
+    function matList(o){ return Array.isArray(o.material) ? o.material : [o.material]; }
+    function highlight(o, on){
+      for (const m of matList(o)){
+        if (!m || !m.emissive) continue;
+        if (on){ m.emissive.setHex(0x2b6cff); m.emissiveIntensity = 0.7; }
+        else { m.emissive.copy(o.userData.baseEmissive); m.emissiveIntensity = o.userData.baseEI; }
+      }
+    }
+    function humanize(raw){
+      let s = raw.replace(/^VH_F_/,'').replace(/^Allen_/,'').replace(/^Yao_/,'').replace(/\.(l|r|el|er|ol|or|j|i)$/i,' $1')
+        .replace(/[_]/g,' ').trim();
+      s = s.replace(/\bleft\b/ig,'左').replace(/\bright\b/ig,'右').replace(/\s\.l$/i,' (左)').replace(/\s\.r$/i,' (右)').replace(/\s(l|r)$/i,(m,p)=> p.toLowerCase()==='l'?' (左)':' (右)');
+      return s.charAt(0).toUpperCase() + s.slice(1);
+    }
+    function select(o){
+      if (selected && selected !== o) highlight(selected, false);
+      selected = o; highlight(o, true);
+      const s = sysByKey[o.userData.sys] || OTHER;
+      const jp = jpName(o.name);
+      document.getElementById('selName').textContent = jp ? (jp + '  /  ' + humanize(o.name)) : humanize(o.name);
+      document.getElementById('selRaw').textContent = o.name;
+      document.getElementById('selSys').innerHTML = `<span class="dot" style="background:${s.color}"></span>${s.label}`;
+      document.getElementById('selDef').textContent = defOf(o.name);
+      selEl.classList.add('show');
+    }
+    function closeSel(){ if (selected) highlight(selected, false); selected = null; selEl.classList.remove('show'); }
+
+    document.getElementById('hideBtn').addEventListener('click', () => { if (selected){ selected.visible = false; closeSel(); } });
+    function fade(o){   // フェード=半透明化(奥が透けて見える)。もう一度で戻る
+      o.userData.faded = !o.userData.faded;
+      for (const m of matList(o)){ if(!m) continue;
+        if (o.userData.faded){ m.transparent=true; m.opacity=0.22; m.depthWrite=false; }
+        else { m.transparent=false; m.opacity=1; m.depthWrite=true; }
+        m.needsUpdate=true; }
+    }
+    document.getElementById('fadeBtn').addEventListener('click', () => { if (selected) fade(selected); });
+    document.getElementById('isoBtn').addEventListener('click', () => {
+      if (!selected) return; const only = selected;
+      for (const m of pickables) m.visible = (m === only);
+      for (const row of listEl.querySelectorAll('.row')){ row.classList.remove('on'); row.querySelector('.sw').textContent=''; }
+    });
+    document.getElementById('closeSel').addEventListener('click', closeSel);
+
+    const panel = document.getElementById('panel');
+    document.getElementById('menuBtn').addEventListener('click', () => panel.classList.toggle('open'));
+    const dissectBtn = document.getElementById('dissectBtn');
+    dissectBtn.addEventListener('click', () => {
+      dissect = !dissect;
+      dissectBtn.classList.toggle('acc', dissect);
+      dissectBtn.textContent = dissect ? '✂ 解剖中' : '✂ 解剖';
+      if (dissect) closeSel();
+    });
+    // 既定状態へ復帰（既定非表示・既定オフ系統は隠れたまま）
+    function restoreDefault(){
+      for (const m of pickables){ if(m.userData.faded) fade(m); m.visible = m.userData.defVis; }
+      buildTree();
+    }
+    // 構造検索（日本語/英語）: 一致した構造だけ表示。空欄で既定へ復帰。
+    const searchBox = document.getElementById('searchBox'), searchCount = document.getElementById('searchCount');
+    searchBox.addEventListener('input', () => {
+      const q = searchBox.value.trim().toLowerCase();
+      if (!q){ restoreDefault(); searchCount.textContent=''; return; }
+      let n=0;
+      for (const m of pickables){
+        const hit = humanize(m.name).toLowerCase().includes(q) || (jpName(m.name)||'').includes(q) || m.name.toLowerCase().includes(q);
+        m.visible = hit; if (hit) n++;
+      }
+      searchCount.textContent = n + '件';
+    });
+    function resetView(){
+      searchBox.value=''; searchCount.textContent='';
+      restoreDefault(); closeSel(); resetPose();   // AR中でも大きさ・向きを既定へ戻す
+      dissect = false; dissectBtn.classList.remove('acc'); dissectBtn.textContent = '✂ 解剖';
+    }
+    document.getElementById('resetBtn').addEventListener('click', resetView);
+    document.getElementById('allBtn').addEventListener('click', () => setAll(true));
+    document.getElementById('noneBtn').addEventListener('click', () => setAll(false));
+    setTimeout(()=>document.getElementById('hint').classList.add('fadeout'), 6000);
+
+    addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+    // ===== カメラ透過AR =====
+    // iPad Safari は WebXR に非対応なので、背景をリアカメラ映像にして 3D を重ねる。
+    // 端末の傾き（3DOF）だけで向きを合わせる方式。視差は出ない＝歩いて回り込むことはできないが、
+    // 系統切替・解剖・タップ名称・共有ルームの同期は全部そのまま使える。
+    const camEl = document.getElementById('cam');
+    let arMode = false, stream = null, orientOK = false;
+    let devA = 0, devB = 0, devG = 0, screenAngle = 0;
+    const HOME_BG = scene.background;
+    const AR_DIST = 2.0;        // 目の前 2m
+    const AR_EYE = 1.5;         // 立位の目線高さの想定
+    const AR_ROT_GAIN = 0.008;  // 1本指ドラッグの回転量（画面1pxあたりのラジアン）
+
+    const _zee = new THREE.Vector3(0, 0, 1);
+    const _eul = new THREE.Euler();
+    const _q0 = new THREE.Quaternion();
+    const _q1 = new THREE.Quaternion(-Math.SQRT1_2, 0, 0, Math.SQRT1_2);   // 端末背面を前方に向ける -90°/X
+    function orientationToQuaternion(q){
+      // three.js の DeviceOrientationControls は削除済みなので自前で持つ
+      _eul.set(devB, devA, -devG, 'YXZ');
+      q.setFromEuler(_eul);
+      q.multiply(_q1);
+      q.multiply(_q0.setFromAxisAngle(_zee, -screenAngle));
+    }
+    const onOrient = (e) => {
+      if (e.alpha == null) return;
+      devA = THREE.MathUtils.degToRad(e.alpha);
+      devB = THREE.MathUtils.degToRad(e.beta || 0);
+      devG = THREE.MathUtils.degToRad(e.gamma || 0);
+    };
+    const onScreenAngle = () => {
+      const a = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+      screenAngle = THREE.MathUtils.degToRad(a);
+    };
+
+    // モデルを「今向いている方向」の正面へ置き直す。iOSの方位は磁気を使わず少しずつずれるので、
+    // ずれたらこれを押してもらう運用にする（自動補正は磁気が机やケースで乱れて余計に泳ぐ）。
+    function recenter(){
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+      fwd.y = 0;
+      if (fwd.lengthSq() < 1e-6) fwd.set(0, 0, -1);
+      fwd.normalize();
+      root.position.copy(fwd.multiplyScalar(AR_DIST));
+      root.position.y = radiusWorld - AR_EYE;   // 足元が床に来るように下げる
+    }
+
+    // ===== マーカー追従（AR.js・iPad同士のコロケーション用） =====
+    // 印刷したマーカーを各端末が独立に認識し、世界の原点をマーカーに固定する。
+    // 同じマーカーを見ている端末は、通信なしで同じ物理位置に模型を見る（共有アンカー方式）。
+    // ⚠️マーカーが画面から外れると追従は止まる。だから等身大でなく卓上サイズで使う。
+    // 印刷実寸に合わせること。ここがズレると模型の大きさも距離も全部ズレる。
+    // A4に刷ると黒枠の外寸は16cm（実測）。用紙を変えたら定規で測って合わせる。
+    // 実機で調整できるよう URL で上書きできる: ?marker=0.16&model=0.5&arres=1280
+    const BUILD = 'v33';   // atlas/sw.js の CACHE と揃える。実機の版ズレ切り分け用
+    const _q = new URLSearchParams(location.search);
+    const MARKER_SIZE_M = Math.max(0.02, parseFloat(_q.get('marker')) || 0.16);   // マーカー一辺(m)
+    // 模型はマーカーに比例させる。固定値にするとマーカーを小さく刷ったとき模型だけ巨大になり、
+    // 全体を見るために離れる→マーカーが認識距離から外れる、あるいは近づく→模型の内部に入る、
+    // というどちらにも詰む状態になる（16cmマーカーに50cm模型で実際に踏んだ）。
+    // 既定はマーカーの2倍。16cm→32cm、25cm→50cm。?model=0.5 で実寸指定も可。
+    const MODEL_ON_MARKER_M = Math.max(0.05, parseFloat(_q.get('model')) || MARKER_SIZE_M * 2);
+    // マーカーが小さいほど認識できる距離が縮む（経験則で一辺の6〜7倍）。18cmだと約1.1〜1.3m。
+    // 検出解像度を上げると範囲と安定性が稼げるが、その分CPUを使う。
+    const AR_RES_W = Math.max(320, parseInt(_q.get('arres')) || 1280);
+    let markerMode = false, arCtx = null, arMarker = null, arjsLoading = null, arMarkerRoot = null, arDisplay = null;
+    let arVideoSize = '-', arFrames = 0, arHits = 0;   // 遠隔で切り分けるための診断値
+    let arLost = 99;                    // 直近で検出が何フレーム途切れているか（初期は「未検出」）
+    const AR_GRACE = 12;                // 約0.2秒は前回の姿勢を保持し、手ブレ由来のチラつきで模型を消さない
+    // 🔥姿勢の安定化フィルタ。平面1枚マーカーは斜めから見ると姿勢が2つに定まらず（planar
+    //   pose ambiguity）、奥行き（見かけの大小）と向き（反転）がフレームごとに飛ぶ。AR.js
+    //   が受け取る生の姿勢(arMarkerRoot)と画面に出す姿勢(arDisplay)を分け、飛んだ姿勢は棄却し
+    //   良い姿勢だけに slerp/lerp で滑らかに追従する。
+    let arAcquired = false, arRejects = 0;   // arAcquired＝一度でもマーカーを読めたか。以後は表示を保持し続ける
+    const AR_POS_LERP = 0.35, AR_ROT_SLERP = 0.35;   // 追従の滑らかさ（大きいほど機敏・小さいほど安定）
+    const AR_FLIP_DEG = 40;                          // 1フレームでこれ以上向きが飛んだら反転とみなし棄却
+    const AR_DIST_HI = 1.7, AR_DIST_LO = 0.58;       // 奥行きがこの比を外れて飛んだら棄却
+    const AR_MAX_REJECT = 18;                        // 棄却が続いたら（本当に動いた）強制再同期
+    const _mkP = new THREE.Vector3(), _mkQ = new THREE.Quaternion();   // 毎フレームの生成を避ける作業用
+    // 🔥Visual-Inertial の踏み込み延長（lean-in）。マーカーが外れた直後の数秒だけ、動きセンサー
+    //   （加速度）で接近を続けさせ、模型の中に踏み込めるようにする。初速は「マーカーが見えていた
+    //   間の視覚的な接近速度」を使い（信頼できる）、加速度で修正、静止検知(ZUPT)で止める。長時間は
+    //   ドリフトするので窓を区切り、マーカーを再び映したら正しい位置へ再ロックして誤差を捨てる。
+    //   ⚠️加速度センサーは個体差があるので係数と符号は実機調整前提。URLで上書きできる。
+    const LEAN_GAIN = parseFloat(_q.get('leangain')) || 1.0;   // 加速度→速度への効き
+    const LEAN_SIGN = parseFloat(_q.get('leansign')) || 1;     // 前進の符号（実機で逆なら -1）
+    const LEAN_WIN  = Math.round(parseFloat(_q.get('leanwin')) || 90);  // 延長できる最大フレーム数(≈1.5秒)
+    const AR_ZUPT_ACC = 0.12;                 // これ未満の加速度が続いたら静止とみなし速度を0に
+    let motionOK = false, accFwd = 0;         // 動きセンサーが使えるか・前方向の加速度(m/s²)
+    let leanVelMS = 0, leanFrames = 0, zupt = 0, leanT = 0;   // 接近速度(m/s)・延長フレーム・静止カウント
+    let lastDistM = 0, lastDistT = 0;         // 直前の距離(m)と時刻（視覚速度の算出用）
+    const leanDir = new THREE.Vector3();      // 接近方向（マーカー中心へ向かう単位ベクトル）
+    const onMotion = (e) => {
+      const a = e.acceleration && e.acceleration.z != null ? e.acceleration : null;   // 重力除去済みの実加速度
+      if (!a) return;
+      motionOK = true;
+      accFwd = a.z || 0;   // 端末背面（リアカメラ方向）＝-Z。前進の符号は LEAN_SIGN で調整する
+    };
+    const markerBtn = document.getElementById('markerBtn');
+
+    function loadArjs(){
+      if (window.THREEx) return Promise.resolve();
+      if (arjsLoading) return arjsLoading;
+      window.THREE = THREE;   // ar-threex.js は UMD で window.THREE を要求する
+      arjsLoading = new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = './vendor/arjs/ar-threex.js';
+        s.onload = res;
+        s.onerror = () => rej(new Error('AR.js を読み込めませんでした'));
+        document.head.appendChild(s);
+      });
+      return arjsLoading;
+    }
+
+    // マーカー座標系は「1単位 = マーカーの一辺」。印刷実寸から逆算して模型を実寸で載せる。
+    function placeOnMarker(){
+      const hUnits = MODEL_ON_MARKER_M / MARKER_SIZE_M;
+      root.scale.setScalar(hUnits / (modelHeightWorld || 1));
+      root.position.set(0, hUnits / 2, 0);   // 足元をマーカー面(y=0)へ
+      root.quaternion.identity();
+    }
+
+    async function waitVideoReady(ms = 5000){
+      const t0 = performance.now();
+      while (!camEl.videoWidth && performance.now() - t0 < ms){
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return !!camEl.videoWidth;
+    }
+
+    async function enterMarker(){
+      try { await loadArjs(); }
+      catch(e){ alert(e.message); return; }
+      if (!(await waitVideoReady())){
+        alert('カメラ映像が取得できていません。先に「📷 現実に重ねる」でカメラを起動してください。');
+        return;
+      }
+      // 🔥解析キャンバスは実際の映像と同じ縦横比にすること。
+      //   16:9の映像を4:3のキャンバスへ流すと正方形のマーカーが長方形に潰れて検出できない。
+      const vw = camEl.videoWidth, vh = camEl.videoHeight;
+      arVideoSize = vw + '×' + vh;
+      arCtx = new THREEx.ArToolkitContext({
+        cameraParametersUrl: './vendor/arjs/camera_para.dat',
+        detectionMode: 'mono',
+        maxDetectionRate: 30,
+        canvasWidth: AR_RES_W, canvasHeight: Math.round(AR_RES_W * vh / vw),
+      });
+      await new Promise((res) => arCtx.init(res));
+      // ⚠️これを忘れると背景映像と模型の遠近が合わずマーカーからずれて見える
+      camera.projectionMatrix.copy(arCtx.getProjectionMatrix());
+      // 🔥カメラは原点に固定し「マーカーの姿勢をモデル側に載せる」方式(modelViewMatrix)にする。
+      //   以前の cameraTransformMatrix はマーカー行列を invert() してカメラを動かすが、
+      //   パターンマーカーの姿勢が薄い/不定な瞬間に近特異行列となり、距離が数千mへ桁あふれ
+      //   （実機で 約233027cm を観測）→模型が点未満に潰れて「出ない」ように見えていた。
+      //   modelViewMatrix は反転しないので桁あふれが原理的に起きない（AR.js標準の安定経路）。
+      camera.position.set(0, 0, 0);
+      camera.quaternion.identity();
+      camera.updateMatrixWorld(true);
+      // arMarkerRoot＝AR.jsが生の姿勢を書き込むだけの受け皿（モデルは吊るさない・描画しない）。
+      // arDisplay＝棄却＋平滑化した姿勢を載せ、その子に模型を吊るす実際の表示用。
+      arMarkerRoot = new THREE.Group(); scene.add(arMarkerRoot);
+      arDisplay = new THREE.Group(); scene.add(arDisplay);
+      arDisplay.add(root);                        // 模型は表示用グループの子（scaleは常に1）
+      arMarker = new THREEx.ArMarkerControls(arCtx, arMarkerRoot, {
+        type: 'pattern',
+        patternUrl: './vendor/arjs/patt.hiro',
+        changeMatrixMode: 'modelViewMatrix',       // マーカー姿勢を反転せずオブジェクトに適用
+        smooth: false,                             // AR.jsの行列平均は反転を混ぜて悪化させるので自前で平滑化
+      });
+      markerMode = true;
+      placeOnMarker();
+      // マーカー未検出のあいだ arDisplay.visible=false にするので模型は出ない。
+      // 子である root 自体は表示のままにして、可視は arDisplay 側で一括制御する。
+      root.visible = true; arDisplay.visible = false;
+      arAcquired = false; arRejects = 0;
+      leanVelMS = 0; leanFrames = 0; zupt = 0; lastDistT = 0; leanDir.set(0,0,0);   // lean-in状態をリセット
+      document.body.classList.add('marker-lost');
+      arFrames = 0; arHits = 0; arLost = 99;
+      updateMarkerMsg();
+      updateMarkerHud(false, false);   // 空のまま出さない（状況が見えないと動いていないと誤解される）
+      document.body.classList.add('marker-on');
+      markerBtn.classList.add('acc');
+    }
+
+    function exitMarker(){
+      markerMode = false;
+      arMarker = null; arCtx = null;
+      document.body.classList.remove('marker-lost', 'marker-on');
+      if (arDisplay){ scene.add(root); scene.remove(arDisplay); arDisplay = null; }   // 模型をシーン直下へ戻す
+      if (arMarkerRoot){ scene.remove(arMarkerRoot); arMarkerRoot = null; }
+      root.visible = true;
+      markerBtn.classList.remove('acc');
+      root.scale.setScalar(1); root.quaternion.identity();
+      camera.updateProjectionMatrix();   // AR.js が差し替えた投影行列を戻す
+      recenter();
+    }
+
+    function markerTick(){
+      // present＝マーカーが今フレーム見えているか（AR.jsが arMarkerRoot.visible に設定）
+      let present = false;
+      if (arCtx && camEl.videoWidth){
+        try {
+          arFrames++;
+          arCtx.update(camEl);
+          present = !!(arMarkerRoot && arMarkerRoot.visible);
+          if (present) arHits++;
+        } catch(e){ present = false; }
+      }
+      // 直前フレームまで「保持」状態（完全に見失っていた）か。復帰時の位置補正の判定に使う。
+      const wasHeld = arLost > AR_GRACE;
+      // 🔥姿勢の棄却＋平滑化。マーカーが見えている間だけ、生の姿勢を評価して表示姿勢を更新する。
+      if (present && arDisplay){
+        _mkP.copy(arMarkerRoot.position);          // AR.jsが分解した生の位置・向き
+        _mkQ.copy(arMarkerRoot.quaternion);
+        if (!arAcquired || wasHeld){
+          // 初取得、または保持からの復帰＝生の姿勢へスナップして位置を補正する（＝再視認での補正）。
+          arDisplay.position.copy(_mkP); arDisplay.quaternion.copy(_mkQ);
+          arAcquired = true; arRejects = 0;
+        } else {
+          const ang = arDisplay.quaternion.angleTo(_mkQ);                 // 前回表示との向きの差(rad)
+          const dCur = Math.max(1e-4, arDisplay.position.length());
+          const ratio = _mkP.length() / dCur;                            // 奥行きの飛び具合
+          const bad = ang > AR_FLIP_DEG * Math.PI / 180 || ratio > AR_DIST_HI || ratio < AR_DIST_LO;
+          if (bad && arRejects < AR_MAX_REJECT){
+            arRejects++;                            // 飛んだ姿勢は捨て、前の安定姿勢のまま保持
+          } else {                                  // 良い姿勢／本当に動いた（棄却が続いた）ら採用
+            arRejects = 0;
+            arDisplay.position.lerp(_mkP, AR_POS_LERP);
+            arDisplay.quaternion.slerp(_mkQ, AR_ROT_SLERP);
+          }
+        }
+        // lean-in の初速に使う「視覚的な接近速度(m/s, 負=接近)」を測り、接近方向を記録する。
+        const nowT = performance.now();
+        const distM = arDisplay.position.length() * MARKER_SIZE_M;
+        if (lastDistT){
+          const dt = Math.min(0.1, Math.max(1e-3, (nowT - lastDistT) / 1000));
+          leanVelMS = leanVelMS * 0.6 + ((distM - lastDistM) / dt) * 0.4;   // EMAで平滑化
+        }
+        lastDistM = distM; lastDistT = nowT; leanT = nowT;
+        if (arDisplay.position.lengthSq() > 1e-9) leanDir.copy(arDisplay.position).normalize();
+        leanFrames = 0; zupt = 0;
+      }
+      arLost = present ? 0 : arLost + 1;
+      const tracking = arLost <= AR_GRACE;          // 今マーカーを追えているか（手ブレの瞬断はGraceで吸収）
+      // 🔥lean-in（Visual-Inertial）: マーカーが外れた直後 LEAN_WIN フレームだけ、動きセンサーで
+      //   接近を続けさせて模型の中へ踏み込めるようにする。マーカーが見えていた間の視覚速度を初速に、
+      //   加速度で修正、静止(ZUPT)で停止。方向は最後の接近方向に固定（短時間なので回転は無視）。
+      //   窓を過ぎるか動きセンサーが無ければ消す。マーカーを再び映せば上のスナップで正しい位置へ再ロック。
+      let leaning = false;
+      if (!tracking && arAcquired && motionOK && arDisplay && leanFrames < LEAN_WIN && leanDir.lengthSq() > 0.5){
+        const nowT = performance.now();
+        const dt = Math.min(0.05, Math.max(1e-3, (nowT - (leanT || nowT)) / 1000));
+        leanT = nowT;
+        leanVelMS += LEAN_SIGN * accFwd * LEAN_GAIN * dt;                 // 加速度で接近速度を修正
+        if (Math.abs(accFwd) < AR_ZUPT_ACC){ if (++zupt > 6) leanVelMS = 0; } else zupt = 0;   // 静止で停止
+        leanVelMS *= 0.985;                                              // わずかに減衰（暴走防止）
+        let distM = lastDistM + leanVelMS * dt;
+        distM = Math.max(MARKER_SIZE_M * 0.15, Math.min(distM, MARKER_SIZE_M * 12));   // 距離をクランプ
+        lastDistM = distM;
+        arDisplay.position.copy(leanDir).multiplyScalar(distM / MARKER_SIZE_M);
+        leanFrames++;
+        leaning = true;
+      }
+      const show = tracking || leaning;
+      if (arDisplay) arDisplay.visible = show;
+      document.body.classList.toggle('marker-lost', !show);
+      if (!show && arFrames % 15 === 0) updateMarkerMsg();   // 診断値を時々更新
+      if (arFrames % 10 === 0) updateMarkerHud(tracking, arAcquired, leaning);
+    }
+
+    // 認識できているか、寄りすぎ／離れすぎでないかを常時表示する。
+    // 模型が視界の外にあると「動いていない」と誤解するため、状況だけは必ず見えるようにする。
+    function updateMarkerHud(tracking, acquired, leaning){
+      const hud = document.getElementById('markerHud');
+      if (leaning){
+        // 踏み込み延長中。加速度 a を出すのは実機で符号・係数を合わせるため。
+        const dCm = Math.round(lastDistM * 100);
+        hud.textContent = `踏み込み中（動きセンサー）・ 約${dCm}cm ・ a=${accFwd.toFixed(2)}`;
+        return;
+      }
+      if (!tracking){
+        // マーカーに固定なので、外れている間は模型は出ない。映せばその位置に復帰する。
+        hud.textContent = acquired
+          ? 'マーカーを映すと、その位置に模型が固定表示されます'
+          : (arHits > 0
+              ? 'マーカー全体がカメラに入るように、少し引いてください'
+              : 'マーカーを平らに置いて、黒枠ごと全体を映してください');
+        return;
+      }
+      // カメラは原点固定。表示用グループの位置＝カメラからマーカー中心までの距離（一辺=1単位）。
+      const dUnits = arDisplay ? arDisplay.position.length() : 0;
+      const dCm = Math.round(dUnits * MARKER_SIZE_M * 100);
+      const fullCm = Math.round(MODEL_ON_MARKER_M * 1.2 * 100);   // 全身が視界に収まる目安
+      let advice = '';
+      if (dCm < fullCm * 0.7) advice = ' ・近づきすぎ、少し離すと全身が見えます';
+      else if (dCm > MARKER_SIZE_M * 700) advice = ' ・遠すぎ、少し近づいて';
+      hud.textContent = `認識中 ・ 距離 約${dCm}cm（全身は約${fullCm}cm）${advice}`;
+    }
+
+    // 認識しないとき、原因を遠隔で切り分けるための表示
+    function updateMarkerMsg(){
+      const c = arCtx && arCtx.parameters;
+      document.getElementById('markerMsg').innerHTML =
+        'マーカーを映してください' +
+        '<br><span style="font-weight:400;font-size:12px;opacity:.75">' +
+        `マーカー ${(MARKER_SIZE_M*100).toFixed(0)}cm ／ 模型 ${(MODEL_ON_MARKER_M*100).toFixed(0)}cm` +
+        `<br>映像 ${arVideoSize} ／ 解析 ${c ? c.canvasWidth+'×'+c.canvasHeight : '-'}` +
+        `<br>解析フレーム ${arFrames} ／ 検出 ${arHits}` +
+        `<br>ビルド ${BUILD}</span>`;   // 実機がどの版を動かしているかを切り分けるため
+    }
+
+    async function enterAR(){
+      try {
+        // iOS は動きセンサーの許可が実タップ由来でないと出ない
+        const DOE = window.DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === 'function'){
+          orientOK = (await DOE.requestPermission()) === 'granted';
+        } else {
+          orientOK = !!DOE;
+        }
+        // 動きセンサー（加速度）＝lean-in の踏み込み延長に使う。iOSは別途許可が要る。
+        const DME = window.DeviceMotionEvent;
+        if (DME && typeof DME.requestPermission === 'function'){
+          try { if ((await DME.requestPermission()) === 'granted') addEventListener('devicemotion', onMotion, true); } catch(e){}
+        } else if (DME){
+          addEventListener('devicemotion', onMotion, true);
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          // 4:3を要求する。camera_para.dat（ARToolKitの校正）が4:3前提なので、16:9のままだと
+          // マーカー姿勢の精度が落ちる。得られなければ解析キャンバス側で実寸比に合わせる。
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 960 }, frameRate: { ideal: 30 } },
+          audio: false,
+        });
+      } catch(err){
+        alert('カメラまたは動きセンサーを利用できませんでした。\n' +
+              'Safariの設定 →「モーションと画面の向きのアクセス」がオンか確認してください。\n\n' + (err.message||err));
+        return;
+      }
+      camEl.srcObject = stream;
+      try { await camEl.play(); } catch(e){}
+
+      arMode = true;
+      document.body.classList.add('ar');
+      scene.background = null; renderer.setClearAlpha(0);
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5));   // 画素を抑えて描画を軽くする
+      controls.enabled = false;
+      camera.position.set(0, 0, 0);
+      // 実際のカメラの画角に合わせないと、背景と模型のずれ方が違って「浮いて」見える
+      const s = stream.getVideoTracks()[0].getSettings();
+      const aspect = (s.width && s.height) ? (s.width / s.height) : (innerWidth / innerHeight);
+      camera.fov = 2 * THREE.MathUtils.radToDeg(Math.atan(Math.tan(THREE.MathUtils.degToRad(60) / 2) / Math.max(1, aspect)));
+      camera.updateProjectionMatrix();
+      root.scale.setScalar(1);            // 実物大
+      onScreenAngle();
+      addEventListener('deviceorientation', onOrient, true);
+      addEventListener('orientationchange', onScreenAngle);
+      recenter();
+      const hintEl = document.getElementById('hint');
+      hintEl.textContent = '1本指=回転 ／ 2本指=移動・拡大 ／ タップ=選択';
+      hintEl.classList.remove('fadeout');
+      passBtn.textContent = '📷 AR中';
+      passBtn.classList.add('acc');
+    }
+
+    function exitAR(){
+      if (markerMode) exitMarker();
+      arMode = false;
+      document.body.classList.remove('ar');
+      removeEventListener('deviceorientation', onOrient, true);
+      removeEventListener('orientationchange', onScreenAngle);
+      removeEventListener('devicemotion', onMotion, true);
+      motionOK = false;
+      if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+      camEl.srcObject = null;
+      scene.background = HOME_BG; renderer.setClearAlpha(1);
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+      controls.enabled = true;
+      camera.fov = 45; camera.updateProjectionMatrix();
+      root.position.set(0, 0, 0); root.scale.setScalar(1); root.quaternion.identity();
+      goHome();
+      passBtn.textContent = '📷 現実に重ねる';
+      passBtn.classList.remove('acc');
+    }
+
+    const passBtn = document.getElementById('passBtn');
+    passBtn.addEventListener('click', () => { arMode ? exitAR() : enterAR(); });
+    markerBtn.addEventListener('click', () => {
+      if (!arMode) return;
+      markerMode ? exitMarker() : enterMarker();
+    });
+    document.getElementById('recenterBtn').addEventListener('click', () => { if (!markerMode) recenter(); });
+    document.getElementById('arExitBtn').addEventListener('click', exitAR);
+    // 背面に回るとiOSはカメラを止めるので復帰させる
+    addEventListener('visibilitychange', () => {
+      if (!arMode || document.hidden || !stream) return;
+      if (stream.getVideoTracks().some(t => t.readyState === 'ended')) { exitAR(); }
+      else { camEl.play().catch(()=>{}); }
+    });
+
+    // ===== 実物大AR（AR Quick Look） =====
+    // 対応端末（iPad/iPhone の Safari）でだけボタンを出す。それ以外では存在ごと隠す。
+    (() => {
+      const btn = document.getElementById('arBtn'), link = document.getElementById('arLink');
+      let ok = false;
+      try { ok = document.createElement('a').relList.supports('ar'); } catch(e) { ok = false; }
+      if (!ok) return;                       // Android/PC/HoloLens では出さない
+      btn.style.display = '';
+      btn.addEventListener('click', () => link.click());   // 実タップ由来でないと起動しない
+    })();
+
+    // ===== 共有ルーム =====
+    const VS = makeViewSync(THREE);
+    const RP = readRoomParams();
+    let room = null, follower = false, wantPose = null, ptrLocal = null;
+    let lastSent = 0, lastJson = '', lastPoseSent = 0;
+    let poseRecv = 0, lastConn = '';   // 診断用：先生から受け取った視点の回数・接続状態
+    const shareEl = document.getElementById('share'), pill = document.getElementById('pill');
+    const shareSt = document.getElementById('shareSt'), pillT = document.getElementById('pillT');
+    const roomCode = document.getElementById('roomCode'), shareHint = document.getElementById('shareHint');
+
+    // 注目点マーカー。モデルの子にする＝端末ごとに配置や縮尺が違っても同じ点を指せる
+    let ptrMesh = null;
+    function ensurePtr(){
+      if (!modelObj) return null;
+      if (ptrMesh && ptrMesh.parent === modelObj) return ptrMesh;
+      ptrMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(radiusLocal*0.022, 16, 12),
+        new THREE.MeshBasicMaterial({ color:0x39a0ff, depthTest:false, transparent:true, opacity:0.95 }));
+      ptrMesh.renderOrder = 999; ptrMesh.visible = false;
+      modelObj.add(ptrMesh);
+      return ptrMesh;
+    }
+    function setPointer(worldPoint){   // 発表者が指した点
+      if (!modelObj) return;
+      ptrLocal = VS.encodePoint(modelObj, worldPoint);
+      const m = ensurePtr(); if (m){ m.position.fromArray(ptrLocal); m.visible = true; }
+    }
+    function showPointer(arr){         // 参加者が受け取った点
+      const m = ensurePtr(); if (!m) return;
+      if (!arr){ m.visible = false; return; }
+      m.position.fromArray(arr); m.visible = true;
+    }
+
+    const RCHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // 紛らわしい0/O/1/Iを除く
+    const newCode = () => Array.from({length:6}, () => RCHARS[Math.floor(Math.random()*RCHARS.length)]).join('');
+    // 授業用の既定クラスコード。同梱の学生QR(atlas/vendor/room-qr.svg)はこのコード専用。
+    // 番号を変えるとQRは合わなくなるので、その場合はURL文字列か tools/make_room_qr.py の印刷QRを使う。
+    const CLASS_ROOM = 'SNM01';
+    const shareQRwrap = document.getElementById('shareQRwrap');
+    // AR中の共有診断を常時表示：版・接続・役割・受信数。次のテストで原因を確実に切り分けるため。
+    const arStatEl = document.getElementById('arStat');
+    function updateArStat(){
+      if (!arMode){ return; }
+      const conn = !room ? '未接続'
+        : ({ connecting:'接続中', reconnecting:'再接続', open:'接続', closed:'切断' }[lastConn] || '—');
+      const role = !room ? '—' : (room.isPresenter() ? '先生(操作)' : (follower ? '参加(同期)' : '自由'));
+      arStatEl.textContent = `${BUILD} ・ 共有:${conn} ・ 役割:${role} ・ 受信:${poseRecv} ・ 動き:${motionOK ? 'OK' : '—'}`;
+    }
+    // 現在のルームが既定クラスコードのときだけ同梱QRを出す。参加者用URLは常に文字列でも示す。
+    function updateShareQR(){
+      const c = (roomCode.value || '').toUpperCase().trim();
+      const base = location.origin + location.pathname;
+      const stURL = base + '?room=' + c + '&role=f';
+      shareQRwrap.classList.toggle('show', c === CLASS_ROOM);
+      shareHint.innerHTML = '参加者用URL:<br><code style="word-break:break-all">' + stURL + '</code>' +
+        (c === CLASS_ROOM ? '' : '<br><span style="color:#93a0c0">※このルーム番号のQRは配布ツールで発行してください</span>');
+    }
+
+    function setStatus(s){
+      lastConn = s;
+      const map = { connecting:['#f2c14b','接続中…'], reconnecting:['#f2c14b','再接続中…'],
+                    open:['#3ddc84','接続'], closed:['#e0524d','切断'] };
+      const [c, t] = map[s] || ['#93a0c0','—'];
+      shareSt.textContent = t;
+      pill.classList.add('show');
+      pill.querySelector('.d').style.background = c;
+      const rt = !room ? '' : room.isPresenter() ? '（操作中）' : '（同期中）';
+      pillT.textContent = t + rt;
+    }
+    function setFollower(v){
+      follower = v;
+      controls.enabled = !v;   // 参加者はカメラ操作を止める（同期と喧嘩させない）
+      // 参加者にはAR共有の入り方を案内する（同期しても模型の出し方が分からないと使えない）。
+      document.getElementById('hint').textContent = v
+        ? '参加中：📷現実に重ねる → 🎯マーカー で先生と同じ模型が出ます'
+        : '1本指=回転 ／ 2本指=移動 ／ ピンチ=拡大 ／ タップ=選択';
+      document.getElementById('hint').classList.remove('fadeout');
+      if (!v) showPointer(null);
+    }
+    function join(code, asPresenter){
+      if (!RP.url){ shareHint.textContent = '中継サーバ未設定です。sync/config.js の SYNC_URL を設定するか、URLに ?sync=ws://… を付けてください。'; return; }
+      if (room) room.close();
+      const c = (code || '').toUpperCase().trim(); if (!c) return;
+      roomCode.value = c;
+      room = createRoom({
+        url: RP.url, room: c,
+        onStatus: setStatus,
+        // 誰も操作権を持っていない間は全員が自由に動かせる（1台だけで入室したときに固まらない）。
+        // 先に動かした人が中継側で自動的に操作権を得る。
+        onRole: (isP, pid) => { setFollower(!!pid && !isP); setStatus(room && room.isConnected() ? 'open' : 'connecting'); },
+        onPose: (d) => { wantPose = d; poseRecv++; },   // 受信数は同期が届いているかの証拠
+        onState: (d) => { try { applyState(d); } catch(e){} },
+      });
+      updateShareQR();
+      if (asPresenter || RP.role === 'presenter') room.claim();   // 先生は入室と同時に操作権を取る
+    }
+    // 中継サーバ未設定のあいだは共有UI自体を出さない（既存の使い勝手を一切変えない）
+    const shareBtn = document.getElementById('shareBtn');
+    if (!RP.enabled) shareBtn.style.display = 'none';
+    shareBtn.addEventListener('click', () => {
+      shareEl.classList.toggle('show');
+      if (!roomCode.value) roomCode.value = RP.room || CLASS_ROOM;   // 授業は既定コード＝同梱QRが使える
+      if (shareEl.classList.contains('show')) updateShareQR();
+    });
+    roomCode.addEventListener('input', updateShareQR);   // 番号を変えたらQR表示/URLを更新
+    // 先生として開始＝入室＋操作権取得を1タップで。学生として参加＝入室のみ（先生に同期）。
+    document.getElementById('startBtn').addEventListener('click', () => { join(roomCode.value, true); shareEl.classList.remove('show'); });
+    document.getElementById('joinBtn').addEventListener('click', () => { join(roomCode.value, false); shareEl.classList.remove('show'); });
+    document.getElementById('claimBtn').addEventListener('click', () => { if (room) room.claim(); shareEl.classList.remove('show'); });
+    // パネルの外側をタップしても閉じる
+    addEventListener('pointerdown', (e) => {
+      if (!shareEl.classList.contains('show')) return;
+      if (shareEl.contains(e.target) || e.target.closest('#shareBtn')) return;
+      shareEl.classList.remove('show');
+    }, true);
+    document.getElementById('leaveBtn').addEventListener('click', () => {
+      if (room){ room.close(); room = null; }
+      setFollower(false); wantPose = null; pill.classList.remove('show'); shareEl.classList.remove('show');
+    });
+    if (RP.enabled && RP.room) join(RP.room);   // QR等からの自動入室
+
+    // 表示状態は「今かくれている構造の名前一覧」をそのまま送る。
+    // 分類器を各ページに複製せずに済み、送り手と受け手で解釈がズレようがない。
+    // まれにしか変わらないので、毎フレームは軽いチェックサムだけ取って変化時に本体を作る。
+    let lastStateHash = null, lastStateSent = 0, pendingState = null;
+    function stateHash(){
+      let h = 0;
+      for (const m of pickables) h = (h*31 + (m.visible ? 1 : 0)) | 0;
+      return (h*31 + (selected ? selected.id : 0)) | 0;
+    }
+    function applyState(st){
+      // 入室直後はまだGLB読込中で pickables が空。ここで捨てると先生の表示状態を
+      // 受け取れないまま既定の姿を見続けることになるので、保持して読込後に適用する。
+      pendingState = st;
+      if (!pickables.length) return;
+      const hid = new Set(st.hid || []);
+      for (const m of pickables) m.visible = !hid.has(m.name);
+      for (const row of listEl.querySelectorAll('.row')){
+        const on = (bySystem[row.dataset.key] || []).some(m => m.visible);
+        row.classList.toggle('on', on); row.querySelector('.sw').textContent = on ? '✓' : '';
+      }
+      const want = st.sel ? pickables.find(m => m.name === st.sel) : null;
+      if (want !== selected){ if (want) select(want); else closeSel(); }
+    }
+
+    // 送受信の1ステップ。描画ループから毎フレーム呼ぶ（検証時はタイマーからも呼べる）
+    function syncTick(){
+      if (!room || !modelObj) return;
+      const centerWorld = root.getWorldPosition(new THREE.Vector3());
+      if (follower){
+        if (!wantPose) return;
+        // AR中はカメラが端末の向きに縛られるので、代わりにモデルを回して同じ面を見せる
+        // （HoloLens と同じやり方）。大きさと置き場所は各自のものなので同期しない。
+        // マーカー上では全員が同じ物理位置の模型を別々の場所から見る。配るのは「視点」ではなく
+        // 模型そのものの向きと大きさ（位置はマーカーが決めるので同期しない）。
+        if (markerMode && wantPose.q){
+          root.quaternion.slerp(new THREE.Quaternion().fromArray(wantPose.q), 0.3);
+          if (wantPose.s) root.scale.setScalar(THREE.MathUtils.lerp(root.scale.x, wantPose.s, 0.3));
+        }
+        else if (arMode) VS.applyTurntable({ root, camWorld: camera.position, applyScale:false }, wantPose, 0.2);
+        else VS.applyOrbit({ camera, controls, model:modelObj, centerWorld, radiusWorld }, wantPose, 0.25);
+        showPointer(wantPose.p || null);
+      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
+        const now = performance.now();
+        const h = stateHash();
+        if (h !== lastStateHash && now - lastStateSent >= 250){   // 表示状態は最大4Hz
+          lastStateHash = h; lastStateSent = now;
+          room.sendState({ hid: pickables.filter(m => !m.visible).map(m => m.name),
+                           sel: selected ? selected.name : null });
+        }
+        if (now - lastSent < 83) return;   // 視点は12Hz。受信側で補間するのでこれで滑らかに見える
+        lastSent = now;
+        const p = VS.encode({ model:modelObj, centerWorld, radiusWorld, camWorld: camera.position });
+        if (ptrLocal) p.p = ptrLocal;
+        if (markerMode){   // マーカー勢向けに模型自身の姿勢も載せる（従来のd/zはそのまま残す）
+          p.q = root.quaternion.toArray().map(n => Math.round(n*1e4)/1e4);
+          p.s = Math.round(root.scale.x*1e4)/1e4;
+        }
+        // 静止中は送らない。ただし2秒に1度は必ず送る＝先生が動かしていない間に入室した
+        // 学生にも視点が届く（中継の pose はメモリ保持なので待機で失われることがある）。
+        const j = JSON.stringify(p);
+        if (j !== lastJson || now - lastPoseSent > 2000){ lastJson = j; lastPoseSent = now; room.sendPose(p); }
+      }
+    }
+
+    let statTick = 0;
+    renderer.setAnimationLoop(() => {
+      if (arMode && markerMode) markerTick();                               // マーカーがカメラ姿勢を決める
+      else if (arMode && orientOK) orientationToQuaternion(camera.quaternion);   // 端末の傾きで視線を決める
+      syncTick();
+      if (arMode && (statTick++ % 12 === 0)) updateArStat();               // 共有診断を約5Hzで更新
+      if (!arMode) controls.update();
+      renderer.render(scene, camera);
+    });
+
+    // AR中は OrbitControls を止めているので、2本指の操作を自前で受ける
+    // （1本指のタップ選択は既存の pointerup 側がそのまま効く）
+    const arPtrs = new Map();
+    let arGesture = null;
+    canvas.addEventListener('pointerdown', (e) => { if (arMode) arPtrs.set(e.pointerId, {x:e.clientX, y:e.clientY}); });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!arMode || !arPtrs.has(e.pointerId)) return;
+      if (follower) return;   // 参加者は模型を触れない（先生の同期と喧嘩させない・タップ選択は別経路で可）
+      const prev = arPtrs.get(e.pointerId);
+      arPtrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
+      // 1本指ドラッグ＝モデルをその場で回す。位置は動かさないので現実に置いたまま向きだけ変わる。
+      // （指を動かさないタップは選択のまま。pick は移動12px未満のときだけ発火するので衝突しない）
+      if (arPtrs.size === 1){
+        const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
+        if (!dx && !dy) return;
+        const q = new THREE.Quaternion();
+        q.setFromAxisAngle(new THREE.Vector3(0,1,0), dx * AR_ROT_GAIN);        // 横＝鉛直軸まわり（背面を見る）
+        root.quaternion.premultiply(q);
+        const right = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
+        q.setFromAxisAngle(right, dy * AR_ROT_GAIN);                            // 縦＝視線に直交する軸まわり
+        root.quaternion.premultiply(q);
+        return;
+      }
+      if (arPtrs.size !== 2) return;
+      const [a, b] = [...arPtrs.values()];
+      const dist = Math.hypot(a.x-b.x, a.y-b.y), mid = {x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+      if (!arGesture){ arGesture = { dist0:dist, scale0:root.scale.x, mid0:mid, pos0:root.position.clone() }; return; }
+      root.scale.setScalar(THREE.MathUtils.clamp(arGesture.scale0 * dist / Math.max(1, arGesture.dist0), 0.1, 5));
+      if (markerMode) return;   // マーカーに固定されているので位置は動かさない
+      const dx = (mid.x - arGesture.mid0.x) / innerWidth, dy = (mid.y - arGesture.mid0.y) / innerHeight;
+      const right = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion);
+      root.position.copy(arGesture.pos0)
+        .addScaledVector(right, dx * AR_DIST * 2)
+        .addScaledVector(new THREE.Vector3(0,1,0), -dy * AR_DIST * 2);
+    });
+    const arPtrEnd = (e) => { arPtrs.delete(e.pointerId); if (arPtrs.size < 2) arGesture = null; };
+    canvas.addEventListener('pointerup', arPtrEnd);
+    canvas.addEventListener('pointercancel', arPtrEnd);
+
+    // 検証用ハンドル（動作には無関係。同期の実測やコンソールからの確認に使う）
+    window.__dbg = { THREE, VS, camera, controls, root, syncTick, pickables, bySystem,
+      setPointer, applyState, stateHash, listEl,
+      enterAR, exitAR, recenter, orientationToQuaternion,
+      loadArjs, enterMarker, exitMarker, placeOnMarker, markerTick,
+      get markerMode(){ return markerMode; },
+      get arCtx(){ return arCtx; }, get arMarker(){ return arMarker; },
+      resetPose, waitVideoReady, updateMarkerMsg,
+      MARKER_SIZE_M, MODEL_ON_MARKER_M, get modelHeightWorld(){ return modelHeightWorld; },
+      setOrient(a,b,g,s){ devA=a; devB=b; devG=g; screenAngle=s; },   // 検証用に姿勢を注入
+      setArMode(v){ arMode=v; orientOK=v; document.body.classList.toggle('ar', v); },
+      get arMode(){ return arMode; },
+      get model(){ return modelObj; }, get room(){ return room; }, get wantPose(){ return wantPose; },
+      get radiusWorld(){ return radiusWorld; }, get follower(){ return follower; },
+      get selected(){ return selected; } };
+
+    loadModel(MODELS[0]);
+  </script>
+</body>
+</html>
