@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: タップで名前 v2（診断つき）");
+    log("版: つまんで名前 v3（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -146,23 +146,15 @@
       else if(sel.length>=1){ enterOne(sel[0]); }
       else { one=null; two=null; log('離した'); }
     }
-    // === タップで名前: さっとつまんで離す(短時間・ほぼ動かない)＝手の光線の先の構造名を表示 ===
-    //   つまんだまま動かせば従来どおり移動。タップ中に手ぶれで動いた分は元に戻す。
-    const TAP_MS=300, TAP_MOVE=0.02;   // 実機で要調整（移動のつもりで名前が出る／その逆が起きたら変える）
+    // === つまんだ瞬間に名前: 手の光線の先の構造名を表示し、そのまま動かせば従来どおり移動 ===
+    //   当初は「短いタップ＝名前／長押し＝移動」で分けたが、HL2実機では部位を選ぶ動きが
+    //   1383ms・手の移動13.5cm（2026-10-03 実測）で、時間と距離では区別できなかった。
+    //   両手目のつまみ（回転・拡縮の開始）では選び直さない。
+    const DIAG=true;   // 実機診断: 光線の先に構造が無いときもAR内に札を出す。動作が確認できたら false に
     const onStart=(e)=>{ const c=e.target;
-      c.userData.tap = ctrls.some(o=>o!==c && o.userData.sel) ? null
-        : { t:performance.now(), hand:c.position.clone(), rootPos:root.position.clone() };
+      if(!ctrls.some(o=>o!==c && o.userData.sel)) pickAt(c);
       c.userData.sel=true; refresh(); };
-    // 実機診断（2026-10-03・HL2で名前が出なかった）: つまむたびに時間と手の移動量を記録し、
-    //   短いのにタップ扱いされなかったときは測った値をAR内に小さく出す。閾値が決まったら DIAG=false に。
-    const DIAG=true;
-    const onEnd  =(e)=>{ const c=e.target, tp=c.userData.tap; c.userData.tap=null;
-      const dt = tp ? performance.now()-tp.t : -1, mv = tp ? c.position.distanceTo(tp.hand) : -1;
-      const isTap = tp && dt < TAP_MS && mv < TAP_MOVE && !ctrls.some(o=>o!==c && o.userData.sel);
-      c.userData.sel=false; refresh();
-      if(tp) log(`つまみ ${Math.round(dt)}ms 移動${(mv*100).toFixed(1)}cm → ${isTap?'タップ':'移動扱い'}`);
-      if(isTap){ root.position.copy(tp.rootPos); pickAt(c); }
-      else if(DIAG && tp && dt<1500) showDiag(c, `移動扱い ${Math.round(dt)}ms / ${(mv*100).toFixed(1)}cm`); };
+    const onEnd  =(e)=>{ e.target.userData.sel=false; refresh(); };
     ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
 
     function updateManip(){
@@ -308,7 +300,7 @@
       sp.renderOrder=1000; const w=0.16; sp.scale.set(w, w*H/W, 1);   // 世界座標で幅16cm
       return sp;
     }
-    function showDiag(c, text){   // 光線の先0.6mに測定値の札（名前の札と同じ置き場を使う）
+    function showDiag(c, text){   // 光線の先0.6mに診断の札（名前の札と同じ置き場を使う）
       clearPick();
       c.updateMatrixWorld(true); c.matrixWorld.decompose(_o,_q,new THREE.Vector3());
       labelSprite=makeLabel(null, text);
@@ -323,7 +315,7 @@
       const hits=ray.intersectObjects(meshList,false).filter(h=>shown(h.object));
       const hit=hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
       clearPick();
-      if(!hit){ log('タップ: 構造なし（光線の先に何もない）'); if(DIAG) showDiag(c,'タップ: 光線の先に構造なし'); return; }
+      if(!hit){ log('つまみ: 構造なし（光線の先に何もない）'); if(DIAG) showDiag(c,'光線の先に構造なし'); return; }
       pickMesh=hit.object; setHighlight(pickMesh,true);
       const jp=jpName(pickMesh.name), en=humanize(pickMesh.name);
       labelSprite=makeLabel(jp, en);
@@ -332,7 +324,7 @@
       root.worldToLocal(p); labelSprite.position.copy(p);
       labelSprite.scale.divideScalar(root.scale.x);
       root.add(labelSprite);
-      log('タップ: '+(jp||'（日本語名なし）')+' / '+pickMesh.name);
+      log('つまみ: '+(jp||'（日本語名なし）')+' / '+pickMesh.name);
     }
     function syncTick(){
       if(!room || !modelObj) return;
