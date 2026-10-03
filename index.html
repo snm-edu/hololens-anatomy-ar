@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: 光線と点 v4（診断つき）");
+    log("版: 札の位置・男女切替 v5（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -152,7 +152,11 @@
     //   両手目のつまみ（回転・拡縮の開始）では選び直さない。
     const DIAG=true;   // 実機診断: 光線の先に構造が無いときもAR内に札を出す。動作が確認できたら false に
     const onStart=(e)=>{ const c=e.target;
-      if(!ctrls.some(o=>o!==c && o.userData.sel)) pickAt(c);
+      if(!ctrls.some(o=>o!==c && o.userData.sel)){
+        const ic=iconAt(c);
+        if(ic){ setModel(ic.object.userData.key); return; }   // アイコンは移動の起点にしない
+        pickAt(c);
+      }
       c.userData.sel=true; refresh(); };
     const onEnd  =(e)=>{ e.target.userData.sel=false; refresh(); };
     ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
@@ -183,54 +187,108 @@
     draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
     const loader=new GLTFLoader(); loader.setDRACOLoader(draco);
 
-    const GLB='vendor/anatomy.glb?v=3';   // 相対パス（GitHub Pagesサブパス対応）。再変換時にvを上げる
-    log("GLB 読み込み開始 "+GLB);
-    let _dlPct=-1;
-    loader.load(GLB,
-      (gltf)=>{
-        const model=gltf.scene;
+    // ===== 標本（女性／男性）。AR内のアイコンをつまんで切り替える =====
+    const MODELS={
+      female:{ label:'女性', sym:'♀', glb:'vendor/anatomy.glb?v=3',   // 相対パス（GitHub Pagesサブパス対応）。再変換時にvを上げる
+        credit:'Model: HuBMAP/HRA VH_Female — CC BY 4.0',
         // 非表示: 乳房(乳腺/乳頭/乳輪＋胸の脂肪fat_L/R)・臍帯複合・胎盤(白)・子宮一式(赤)。
         //   皮膚(青い殻)は表示維持。fat_L/R は Z+0.35〜0.53(胸高)＝乳房脂肪なので乳房として除去。
         // 注: 'uterus|uterine' 限定で outer_cortex_of_kidney(=腎皮質)への誤爆を回避。
         //     Allen_mammillary_*=脳の乳頭体・*_spinal_cord_*=脊髄 も対象外。
-        const HIDE=/mammary_lobes|_nipple_|_areola|_fat_[LR]$|umbilical_cord|umbilical_artery|umbilical_vein|placenta|amnion|chorionic_plate|basal_plate|uterus|uterine|uterosacral|uterovesical/i;
-        let tris=0, meshes=0, hidden=0; const hiddenNames=[];
-        model.traverse(o=>{
-          if(o.isMesh){
-            meshes++;
-            meshList.push(o);
-            // AR で前面を塞ぐ構造はこの端末の方針として常に隠す（共有ルームでも上書きさせない）
-            if(HIDE.test(o.name)){ o.userData.forceHidden=true; o.visible=false; hidden++; if(hiddenNames.length<14) hiddenNames.push(o.name); return; }
-            const g=o.geometry; tris += g.index? g.index.count/3 : (g.attributes.position? g.attributes.position.count/3:0);
-            // 加算表示で見えるよう自発光ブースト＋両面
-            const mats=Array.isArray(o.material)?o.material:[o.material];
-            for(const mt of mats){ if(mt){ mt.emissive=mt.color? mt.color.clone():new THREE.Color(0x888888); mt.emissiveIntensity=0.35; mt.side=THREE.DoubleSide; mt.metalness=0.0; mt.roughness=0.9; } }
-            const f=Array.isArray(o.material)?o.material[0]:o.material;   // 選択ハイライトの復帰用
-            o.userData.baseEm = f&&f.emissive ? f.emissive.clone() : new THREE.Color(0x000000);
-            o.userData.baseEI = (f&&f.emissiveIntensity!=null) ? f.emissiveIntensity : 1;
-          }
-        });
-        log(`非表示 ${hidden}件: ${hiddenNames.join(', ')}`);
-        // 自動フィット: 高さ0.7mへスケール→正面0.9m・目線やや下に配置
-        const box=new THREE.Box3().setFromObject(model);
-        const size=new THREE.Vector3(), center=new THREE.Vector3();
-        box.getSize(size); box.getCenter(center);
-        const h=Math.max(size.x,size.y,size.z)||1;
-        const s=0.7/h; model.scale.setScalar(s);
-        model.position.sub(center.multiplyScalar(s));   // 原点中心化
-        root.add(model);
-        modelObj=model; radiusLocal=h*0.5; radiusWorldBase=h*0.5*s;   // 共有ルーム用
-        // local座標は原点=頭の位置。目線やや下・正面0.8mに配置
-        root.position.set(0, -0.1, -0.8);
-        log(`✓ GLB読込完了 meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
-        log('操作: 片手=移動 ／ 両手でつまみ、片手を手前・片手を奥へ回すと回転(背面も)・広げると拡大');
-        log('※背面まで届かない時は一度離してつまみ直すと続きから回せます');
-        btn.disabled=false; btn.textContent='▶ ENTER AR';
-        if(pendingState){ try{ applyState(pendingState); log('先生の表示状態を反映しました'); }catch(e){} }
-      },
-      (ev)=>{ if(ev.total){ const p=Math.round(ev.loaded/ev.total*100); if(p>=_dlPct+25||p===100){ _dlPct=p; log('DL '+p+'%'); } } },
-      (err)=>{ log('✗ GLB読込エラー: '+(err.message||err)); }
-    );
+        hide:/mammary_lobes|_nipple_|_areola|_fat_[LR]$|umbilical_cord|umbilical_artery|umbilical_vein|placenta|amnion|chorionic_plate|basal_plate|uterus|uterine|uterosacral|uterovesical/i },
+      male:{ label:'男性', sym:'♂', glb:'vendor/male.glb?v=1',
+        credit:'Model: BodyParts3D © DBCLS — CC BY 4.0 ／ 再構成: human-atlas (MIT)',
+        // iPadアプリの男性標本（human-atlas 軽量版）を HoloLens 向けに変換したもの。
+        //   筋（横隔膜以外）と外性器・陰毛は変換時に除去済み（HL2には表示切替の画面が無いため）。
+        //   ポリゴンは iPad 版の約半分。⚠️ この標本には肺が無く、肝臓は尾状葉のみ。
+        //   材質が系統ごとに共有なので、部位ごとに複製しないと1つ光らせると系統全体が光る。
+        ownMaterials:true,
+        // 皮膚は女性と同じく半透明。胸郭は閉じているので半透明にして中を見せる（iPad版と同じ値）
+        translucent:[[/^skin$/i,0.22],[/_rib$|_rib_|costal_cartilage|sternum|manubrium|xiphoid|diaphragm/i,0.55]] },
+    };
+    const loaded={};   // 読み込み済みの標本（切り替えのたびにダウンロードし直さない）
+    let curKey=null, loadingKey=null, placed=false;
+    function prepare(def, model){
+      let tris=0, meshes=0, hidden=0; const hiddenNames=[];
+      model.traverse(o=>{
+        if(!o.isMesh) return;
+        meshes++;
+        if(def.ownMaterials) o.material = Array.isArray(o.material) ? o.material.map(m=>m.clone()) : o.material.clone();
+        // AR で前面を塞ぐ構造はこの端末の方針として常に隠す（共有ルームでも上書きさせない）
+        if(def.hide && def.hide.test(o.name)){ o.userData.forceHidden=true; o.visible=false; hidden++; if(hiddenNames.length<14) hiddenNames.push(o.name); return; }
+        const g=o.geometry; tris += g.index? g.index.count/3 : (g.attributes.position? g.attributes.position.count/3:0);
+        const op = def.translucent ? (def.translucent.find(([re])=>re.test(o.name))||[])[1] : undefined;
+        // 加算表示で見えるよう自発光ブースト＋両面
+        const mats=Array.isArray(o.material)?o.material:[o.material];
+        for(const mt of mats){ if(mt){ mt.emissive=mt.color? mt.color.clone():new THREE.Color(0x888888); mt.emissiveIntensity=0.35; mt.side=THREE.DoubleSide; mt.metalness=0.0; mt.roughness=0.9;
+          if(op!==undefined){ mt.transparent=true; mt.opacity=op; mt.depthWrite=false; } } }
+        const f=Array.isArray(o.material)?o.material[0]:o.material;   // 選択ハイライトの復帰用
+        o.userData.baseEm = f&&f.emissive ? f.emissive.clone() : new THREE.Color(0x000000);
+        o.userData.baseEI = (f&&f.emissiveIntensity!=null) ? f.emissiveIntensity : 1;
+      });
+      if(hidden) log(`非表示 ${hidden}件: ${hiddenNames.join(', ')}`);
+      // 自動フィット: 高さ0.7mへスケール→原点中心化
+      const box=new THREE.Box3().setFromObject(model);
+      const size=new THREE.Vector3(), center=new THREE.Vector3();
+      box.getSize(size); box.getCenter(center);
+      const h=Math.max(size.x,size.y,size.z)||1;
+      const s=0.7/h; model.scale.setScalar(s);
+      model.position.sub(center.multiplyScalar(s));
+      model.userData.fit={h,s};
+      log(`✓ GLB読込完了(${def.label}) meshes=${meshes} tris=${Math.round(tris)} 元高さ=${h.toFixed(2)} scale=${s.toFixed(3)}`);
+    }
+    function show(key){
+      const model=loaded[key], def=MODELS[key];
+      clearPick();
+      if(selMesh){ setHighlight(selMesh,false); selMesh=null; }
+      if(modelObj) root.remove(modelObj);
+      meshList.length=0; model.traverse(o=>{ if(o.isMesh) meshList.push(o); });
+      root.add(model);
+      modelObj=model; radiusLocal=model.userData.fit.h*0.5; radiusWorldBase=model.userData.fit.h*0.5*model.userData.fit.s;   // 共有ルーム用
+      // local座標は原点=頭の位置。目線やや下・正面0.8mに配置（切り替えでは置き場所を保つ）
+      if(!placed){ root.position.set(0, -0.1, -0.8); placed=true; }
+      curKey=key; document.getElementById('cred').textContent=def.credit;
+      drawIcons();
+      if(pendingState){ try{ applyState(pendingState); }catch(e){} }
+    }
+    function setModel(key){
+      if(key===curKey || loadingKey) return;
+      if(loaded[key]){ show(key); log('標本: '+MODELS[key].label); return; }
+      const def=MODELS[key]; loadingKey=key; drawIcons();
+      log("GLB 読み込み開始 "+def.glb);
+      let pct=-1;
+      loader.load(def.glb,
+        (gltf)=>{ prepare(def, gltf.scene); loaded[key]=gltf.scene; loadingKey=null; show(key);
+          if(btn.disabled && !renderer.xr.isPresenting){
+            log('操作: 片手=移動 ／ 両手でつまみ、片手を手前・片手を奥へ回すと回転(背面も)・広げると拡大');
+            log('※背面まで届かない時は一度離してつまみ直すと続きから回せます');
+            log('部位をつまむと名前が出ます。足元の ♀/♂ をつまむと女性・男性を切り替えます');
+            btn.disabled=false; btn.textContent='▶ ENTER AR'; } },
+        (ev)=>{ if(ev.total){ const p=Math.round(ev.loaded/ev.total*100); if(p>=pct+25||p===100){ pct=p; log('DL '+p+'%'); } } },
+        (err)=>{ loadingKey=null; drawIcons(); log('✗ GLB読込エラー: '+(err.message||err)); });
+    }
+    // 切り替えアイコン（模型の左足元に縦に2つ）。模型と一緒に動くよう root の子にする
+    const icons=Object.keys(MODELS).map((key,i)=>{
+      const cv=document.createElement('canvas'); cv.width=cv.height=256;
+      const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv), depthTest:false, transparent:true}));
+      sp.renderOrder=997; sp.scale.set(0.07,0.07,1); sp.position.set(-0.30, -0.30+i*0.085, 0);
+      sp.userData={key, cv}; root.add(sp); return sp;
+    });
+    function drawIcons(){
+      for(const sp of icons){
+        const {key,cv}=sp.userData, def=MODELS[key], g=cv.getContext('2d');
+        const on=key===curKey, busy=key===loadingKey;
+        g.clearRect(0,0,256,256);
+        g.fillStyle = on ? '#1060ff' : busy ? '#806000' : 'rgba(40,48,70,0.85)';
+        g.beginPath(); g.arc(128,128,120,0,Math.PI*2); g.fill();
+        g.lineWidth=8; g.strokeStyle = on ? '#ffe200' : '#9aa4bf'; g.stroke();
+        g.fillStyle='#fff'; g.textAlign='center'; g.textBaseline='middle';
+        g.font='bold 120px sans-serif'; g.fillText(def.sym,128,108);
+        g.font='bold 44px sans-serif'; g.fillText(busy?'読込中':def.label,128,196);
+        sp.material.map.needsUpdate=true;
+      }
+    }
+    setModel('female');
 
     // ===== 共有ルーム =====
     // QRに ?room=XXXX&role=f を入れておけば、HL2は見つめてOpenするだけで参加できる（打鍵ゼロ）。
@@ -280,12 +338,13 @@
     // 皮膚・脂肪は前面を覆うので飛ばして奥を選ぶ（iPadアプリと同じ考え方）。
     const PASS=/(^|_)skin$|_fat_|_fat$|subcutaneous/i;
     const ray=new THREE.Raycaster(), _o=new THREE.Vector3(), _q=new THREE.Quaternion();
-    let pickMesh=null, labelSprite=null;
+    let pickMesh=null, labelSprite=null, labelLine=null;
     function shown(o){ for(let p=o; p; p=p.parent){ if(!p.visible) return false; } return true; }
     function clearPick(){
       if(pickMesh && pickMesh!==selMesh) setHighlight(pickMesh,false);
       pickMesh=null;
       if(labelSprite){ labelSprite.parent?.remove(labelSprite); labelSprite.material.map.dispose(); labelSprite.material.dispose(); labelSprite=null; }
+      if(labelLine){ labelLine.parent?.remove(labelLine); labelLine.geometry.dispose(); labelLine.material.dispose(); labelLine=null; }
     }
     function makeLabel(jp, en){
       const W=1024, H=jp?256:160, cv=document.createElement('canvas'); cv.width=W; cv.height=H;
@@ -307,10 +366,15 @@
       labelSprite.position.copy(_o).add(new THREE.Vector3(0,0,-0.6).applyQuaternion(_q));
       scene.add(labelSprite);
     }
-    function castFrom(c){   // 手の光線の先で最初に当たる構造（皮膚・脂肪は飛ばす）
+    function aim(c){
       c.updateMatrixWorld(true);
       c.matrixWorld.decompose(_o,_q,new THREE.Vector3());
       ray.set(_o, new THREE.Vector3(0,0,-1).applyQuaternion(_q));
+      ray.camera = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;   // Sprite の当たり判定に必要
+    }
+    function iconAt(c){ aim(c); return ray.intersectObjects(icons,false)[0] || null; }
+    function castFrom(c){   // 手の光線の先で最初に当たる構造（皮膚・脂肪は飛ばす）
+      aim(c);
       const hits=ray.intersectObjects(meshList,false).filter(h=>shown(h.object));
       return hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
     }
@@ -334,7 +398,8 @@
         if(!p.c.visible){ p.dot.visible=false; continue; }   // 手が見えていない
         if(now-p.last<CAST_MS) continue;
         p.last=now;
-        const hit=castFrom(p.c);
+        const ic=iconAt(p.c), mh=castFrom(p.c);
+        const hit = ic && (!mh || ic.distance<mh.distance) ? ic : mh;
         if(hit){ p.dot.position.copy(hit.point); p.dot.visible=true; p.line.scale.z=hit.distance; }
         else   { p.dot.visible=false; p.line.scale.z=RAY_LEN; }
       }
@@ -347,11 +412,26 @@
       pickMesh=hit.object; setHighlight(pickMesh,true);
       const jp=jpName(pickMesh.name), en=humanize(pickMesh.name);
       labelSprite=makeLabel(jp, en);
-      // 模型と一緒に動くよう root の子にする。大きさは root の拡縮を打ち消して一定に保つ
-      const p=hit.point.clone(); p.y+=0.04;
-      root.worldToLocal(p); labelSprite.position.copy(p);
+      // 札は体の外へ出し、細い線で当たり点と結ぶ。当たり点の真上に出すと隣の臓器を隠して
+      //   次を指しにくい（2026-10-03 実機）。左右は見ている人から見て当たり点のある側。
+      const viewer = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      const right=new THREE.Vector3(1,0,0).applyQuaternion(viewer.getWorldQuaternion(new THREE.Quaternion()));
+      right.y=0; if(right.lengthSq()<1e-6) right.set(1,0,0); right.normalize();
+      const box=new THREE.Box3().setFromObject(modelObj), ctr=box.getCenter(new THREE.Vector3());
+      let half=0;
+      for(const x of [box.min.x,box.max.x]) for(const y of [box.min.y,box.max.y]) for(const z of [box.min.z,box.max.z])
+        half=Math.max(half, Math.abs(new THREE.Vector3(x,y,z).sub(ctr).dot(right)));
+      const side = hit.point.clone().sub(ctr).dot(right) < 0 ? -1 : 1;
+      const lw=labelSprite.scale.x;   // 札の幅（世界座標）
+      const at=ctr.clone().addScaledVector(right, side*(half+0.02+lw/2)); at.y=hit.point.y;
+      const edge=at.clone().addScaledVector(right, -side*lw/2);   // 札の体側の端
+      // 模型と一緒に動くよう root の子にする。札の大きさは root の拡縮を打ち消して一定に保つ
+      labelSprite.position.copy(root.worldToLocal(at.clone()));
       labelSprite.scale.divideScalar(root.scale.x);
       root.add(labelSprite);
+      labelLine=new THREE.Line(new THREE.BufferGeometry().setFromPoints([root.worldToLocal(hit.point.clone()), root.worldToLocal(edge)]),
+        new THREE.LineBasicMaterial({color:0xffe200, depthTest:false, transparent:true}));
+      labelLine.renderOrder=999; root.add(labelLine);
       log('つまみ: '+(jp||'（日本語名なし）')+' / '+pickMesh.name);
     }
     function syncTick(){
@@ -385,7 +465,8 @@
     window.__dbg={THREE,VS,camera,root,syncTick,applyState,meshList,camWorld,
       get model(){return modelObj},get room(){return room},
       get wantPose(){return wantPose},get follower(){return follower},get selMesh(){return selMesh},
-      pickAt,ctrls,pointers,updatePointers,get pickMesh(){return pickMesh},get labelSprite(){return labelSprite}};
+      pickAt,ctrls,pointers,updatePointers,icons,setModel,get curKey(){return curKey},
+      get pickMesh(){return pickMesh},get labelSprite(){return labelSprite},get labelLine(){return labelLine}};
 
     let frames=0;
     renderer.setAnimationLoop(()=>{
