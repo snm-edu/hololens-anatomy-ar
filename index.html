@@ -87,6 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
+    log("版: タップで名前 v2（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -152,11 +153,16 @@
       c.userData.tap = ctrls.some(o=>o!==c && o.userData.sel) ? null
         : { t:performance.now(), hand:c.position.clone(), rootPos:root.position.clone() };
       c.userData.sel=true; refresh(); };
+    // 実機診断（2026-10-03・HL2で名前が出なかった）: つまむたびに時間と手の移動量を記録し、
+    //   短いのにタップ扱いされなかったときは測った値をAR内に小さく出す。閾値が決まったら DIAG=false に。
+    const DIAG=true;
     const onEnd  =(e)=>{ const c=e.target, tp=c.userData.tap; c.userData.tap=null;
-      const isTap = tp && performance.now()-tp.t < TAP_MS && c.position.distanceTo(tp.hand) < TAP_MOVE
-                    && !ctrls.some(o=>o!==c && o.userData.sel);
+      const dt = tp ? performance.now()-tp.t : -1, mv = tp ? c.position.distanceTo(tp.hand) : -1;
+      const isTap = tp && dt < TAP_MS && mv < TAP_MOVE && !ctrls.some(o=>o!==c && o.userData.sel);
       c.userData.sel=false; refresh();
-      if(isTap){ root.position.copy(tp.rootPos); pickAt(c); } };
+      if(tp) log(`つまみ ${Math.round(dt)}ms 移動${(mv*100).toFixed(1)}cm → ${isTap?'タップ':'移動扱い'}`);
+      if(isTap){ root.position.copy(tp.rootPos); pickAt(c); }
+      else if(DIAG && tp && dt<1500) showDiag(c, `移動扱い ${Math.round(dt)}ms / ${(mv*100).toFixed(1)}cm`); };
     ctrls.forEach(c=>{ c.addEventListener('selectstart',onStart); c.addEventListener('selectend',onEnd); });
 
     function updateManip(){
@@ -302,6 +308,13 @@
       sp.renderOrder=1000; const w=0.16; sp.scale.set(w, w*H/W, 1);   // 世界座標で幅16cm
       return sp;
     }
+    function showDiag(c, text){   // 光線の先0.6mに測定値の札（名前の札と同じ置き場を使う）
+      clearPick();
+      c.updateMatrixWorld(true); c.matrixWorld.decompose(_o,_q,new THREE.Vector3());
+      labelSprite=makeLabel(null, text);
+      labelSprite.position.copy(_o).add(new THREE.Vector3(0,0,-0.6).applyQuaternion(_q));
+      scene.add(labelSprite);
+    }
     function pickAt(c){
       if(!modelObj) return;
       c.updateMatrixWorld(true);
@@ -310,7 +323,7 @@
       const hits=ray.intersectObjects(meshList,false).filter(h=>shown(h.object));
       const hit=hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
       clearPick();
-      if(!hit){ log('タップ: 構造なし（光線の先に何もない）'); return; }
+      if(!hit){ log('タップ: 構造なし（光線の先に何もない）'); if(DIAG) showDiag(c,'タップ: 光線の先に構造なし'); return; }
       pickMesh=hit.object; setHighlight(pickMesh,true);
       const jp=jpName(pickMesh.name), en=humanize(pickMesh.name);
       labelSprite=makeLabel(jp, en);
