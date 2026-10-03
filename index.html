@@ -87,7 +87,7 @@
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
     const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
     log("boot "+navigator.userAgent.slice(0,50));
-    log("版: 向き補正・札の距離 v9（診断つき）");
+    log("版: 臓器優先 v10（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
 
@@ -98,7 +98,8 @@
     import { readRoomParams } from './sync/config.js';
     import { createRoom } from './sync/room.js?v=7';   // 拒否コードの扱いを変えた版（Pages の10分キャッシュ対策）
     import { makeViewSync } from './sync/viewsync.js';
-    import { labelName, humanize } from './names.js?v=8';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
+    import { labelName, humanize } from './names.js?v=8';
+    import PICK_TIERS from './pick_tiers.js?v=10';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
     log("three r"+THREE.REVISION+" import OK");
     if('xr' in navigator) navigator.xr.isSessionSupported('immersive-ar').then(s=>log("immersive-ar supported: "+s));
 
@@ -534,10 +535,22 @@
       ray.layers.enable(PART_LAYER);   // 描かずに当たり判定だけに使う部位も対象にする
     }
     function iconAt(c){ aim(c); return ray.intersectObjects(icons,false)[0] || null; }
-    function castFrom(c){   // 手の光線の先で最初に当たる構造（皮膚・脂肪は飛ばす）
+    // 光線で選ぶ優先順位は iPad アプリ（ARController.handleTap）と同じ3段:
+    //   1) 臓器（主役） 2) 血管・骨・筋・腱・結合組織・毛（後回し） 3) 半透明の層（皮膚・胸郭＝貫通）
+    //   2026-10-03 実機で「臓器より皮膚・腱・血管・骨が選ばれやすい」。一覧は iPad と同じ規則で生成（pick_tiers.js）
+    const TIER = Object.fromEntries(Object.entries(PICK_TIERS).map(([k,v])=>[k,{pass:new Set(v.pass), low:new Set(v.low)}]));
+    function castFrom(c){   // 手の光線の先で、上の優先順位で最初に当たる構造
       aim(c);
-      const hits=ray.intersectObjects(meshList.filter(shown),false);   // 隠した部位は判定しない
-      return hits.find(h=>!PASS.test(h.object.name)) || null;   // intersectObjects は距離順
+      const hits=ray.intersectObjects(meshList.filter(shown),false);   // 隠した部位は判定しない（距離順）
+      const T=TIER[curKey]||{pass:new Set(),low:new Set()};
+      let low=null, pass=null;
+      for(const h of hits){
+        const n=h.object.name;
+        if(T.pass.has(n) || PASS.test(n)){ pass ??= h; continue; }
+        if(T.low.has(n)){ low ??= h; continue; }
+        return h;
+      }
+      return low || pass;   // 臓器が無ければ後回しの構造、それも無ければ最も手前の半透明の層
     }
     // 手の光線と当たり点を常に見せる。WebXRの没入表示中はHL2が自前の光線を描かないので、
     //   描かないと「どこを指しているか分からない」（2026-10-03 実機で発生）。
