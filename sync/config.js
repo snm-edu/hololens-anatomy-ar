@@ -29,5 +29,7 @@ export function readRoomParams() {
   const room = (q.get('room') || '').trim();
   const roleParam = (q.get('role') || '').trim().toLowerCase();
   const role = roleParam.startsWith('p') ? 'presenter' : roleParam.startsWith('f') ? 'follower' : '';
-  return { url, room, role, enabled: !!url };
+  // 教員ライセンス。無ければ空文字（Web版 Atlas は通常これを持たない＝先生役になれない）
+  const token = (q.get('token') || '').trim();
+  return { url, room, role, token, enabled: !!url };
 }

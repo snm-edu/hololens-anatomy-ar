@@ -79,8 +79,8 @@
   <script src="atlas/dict.js"></script>
   <script type="importmap">
   { "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      "three": "./atlas/vendor/three.module.js",
+      "three/addons/": "./atlas/vendor/jsm/"
   } }
   </script>
   <script type="module">
@@ -190,7 +190,7 @@
     }
 
     const draco=new DRACOLoader();
-    draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+    draco.setDecoderPath('./atlas/vendor/draco/');   // 学内Wi-Fiでも動くよう外部CDNを使わず atlas と同じ同梱版を読む
     const loader=new GLTFLoader(); loader.setDRACOLoader(draco);
 
     // ===== 標本（女性／男性）。AR内のアイコンをつまんで切り替える =====

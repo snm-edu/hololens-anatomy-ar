@@ -1076,6 +1076,13 @@
     document.getElementById('startBtn').addEventListener('click', () => { join(roomCode.value, true); shareEl.classList.remove('show'); });
     document.getElementById('joinBtn').addEventListener('click', () => { join(roomCode.value, false); shareEl.classList.remove('show'); });
     document.getElementById('claimBtn').addEventListener('click', () => { if (room) room.claim(); shareEl.classList.remove('show'); });
+    // 教員ライセンス（?token=）の無い通常アクセスでは先生用ボタンを隠す。押しても中継に not-teacher / room-not-open で
+    // 断られ、学生が迷うだけ。DOM は残す（リスナも .click() も従来どおり）。残る「学生として参加」を主ボタンの色にする。
+    const TEACHER_ONLY = ['startBtn', 'claimBtn'];
+    if (!RP.token){
+      for (const id of TEACHER_ONLY) document.getElementById(id).style.display = 'none';
+      document.getElementById('joinBtn').classList.add('acc');
+    }
     // パネルの外側をタップしても閉じる
     addEventListener('pointerdown', (e) => {
       if (!shareEl.classList.contains('show')) return;
