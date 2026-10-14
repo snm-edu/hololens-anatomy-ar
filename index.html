@@ -85,7 +85,10 @@
   </script>
   <script type="module">
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
-    const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'});}catch(e){}};
+    // 診断は ?diag=1 を付けたときだけ。beacon は GitHub Pages に受け口が無い（開発用サーバ専用）。
+    //   .catch を外すと、送信失敗 → unhandledrejection → log → また送信、で止まらなくなる。
+    const DIAG=new URLSearchParams(location.search).get('diag')==='1';
+    const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);if(DIAG){try{fetch('beacon?m='+encodeURIComponent('anat:'+m),{cache:'no-store'}).catch(()=>{});}catch(e){}}};
     log("boot "+navigator.userAgent.slice(0,50));
     log("版: 臓器優先 v10（診断つき）");
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
@@ -96,7 +99,7 @@
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
     import { readRoomParams } from './sync/config.js';
-    import { createRoom } from './sync/room.js?v=7';   // 拒否コードの扱いを変えた版（Pages の10分キャッシュ対策）
+    import { createRoom } from './sync/room.js?v=8';   // 発表者だけが送る版（Pages の10分キャッシュ対策）
     import { makeViewSync } from './sync/viewsync.js';
     import { labelName, humanize } from './names.js?v=8';
     import PICK_TIERS from './pick_tiers.js?v=10';   // ページと同時に更新されるよう版を付ける（Pages は10分キャッシュ）
@@ -152,7 +155,7 @@
     //   当初は「短いタップ＝名前／長押し＝移動」で分けたが、HL2実機では部位を選ぶ動きが
     //   1383ms・手の移動13.5cm（2026-10-03 実測）で、時間と距離では区別できなかった。
     //   両手目のつまみ（回転・拡縮の開始）では選び直さない。
-    const DIAG=true;   // 実機診断: 光線の先に構造が無いときもAR内に札を出す。動作が確認できたら false に
+    // DIAG（冒頭で定義・?diag=1 のときだけ）: 光線の先に構造が無いときもAR内に札を出す
     const onStart=(e)=>{ const c=e.target;
       if(!ctrls.some(o=>o!==c && o.userData.sel)){
         const ic=iconAt(c);
@@ -630,7 +633,8 @@
         if(!wantPose || colocMode!=='off') return;   // マーカー原点を共有しているときは各自の位置が正（iPadも視点同期を使わない）
         VS.applyTurntable({root, camWorld:camWorld()}, wantPose, 0.2);
         showPointer(wantPose.p||null);
-      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
+      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。送るのは操作権があるときだけ
+        if(!room.isPresenter()) return;
         const now=performance.now();
         if(now-lastSent<83) return;   // 12Hz
         lastSent=now;
@@ -658,12 +662,15 @@
       room=createRoom({ url:RP.url, room:RP.room,
         onStatus:(s,detail)=>{ log('共有ルーム['+RP.room+']: '+s+(detail?' '+detail:''));
           const [t,c]=ROOM_TEXT[s]||[s,'#fff']; showRoom(`部屋 ${RP.room}：${t}`, c); },
+        // 中継に断られた理由（not-teacher＝この端末は先生になれない）を黙って捨てない
+        onError:(code)=>{ log('共有ルーム['+RP.room+']: 中継エラー '+code);
+          showRoom(code==='not-teacher' ? `部屋 ${RP.room}：この端末は先生になれません` : `部屋 ${RP.room}：エラー ${code}`,'#ff9a40'); },
         // 誰も操作権を持っていない間は自分で自由に回せる（1台だけで入室したときに固まらない）
         onRole:(isP,pid)=>{ follower=!!pid && !isP;
           if(follower) showRoom(`部屋 ${RP.room}：先生と連動中`,'#7CFC00');
           else if(!pid) showRoom(`部屋 ${RP.room}：先生（発表者）がいません`,'#ffe200');
           log(follower?'参加者モード（先生の操作に同期／片手で置き場所だけ移動可）'
-                      :'自由操作モード（両手で回転・拡縮できます。動かすとあなたが操作権を持ちます）'); },
+                      :'自由操作モード（両手で回転・拡縮できます。この端末だけの操作で、他の端末には送りません）'); },
         onPose:(d)=>{ wantPose=d; },
         onState:(d)=>{ try{ applyState(d); }catch(e){ log('state適用エラー: '+(e.message||e)); } } });
       if(RP.role==='presenter') room.claim();

@@ -192,7 +192,7 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     import { readRoomParams } from '../sync/config.js';
-    import { createRoom } from '../sync/room.js';
+    import { createRoom } from '../sync/room.js?v=8';
     import { makeViewSync, HOME_ZOOM } from '../sync/viewsync.js';
 
     // ===== システム分類（モデル別・優先順で先にマッチ。Blenderで全メッシュ検証済み） =====
@@ -311,15 +311,21 @@
     function disposeObj(obj){
       obj.traverse((o)=>{ if(o.isMesh){ o.geometry?.dispose(); const m=Array.isArray(o.material)?o.material:[o.material]; m.forEach(x=>x?.dispose()); } });
     }
+    // 古い読込結果・進捗・タイマーが現在の表示を上書きしないよう世代を管理する。
+    let loadSeq = 0, loadTimer = null;
     function loadModel(def){
+      const seq = ++loadSeq;
+      clearTimeout(loadTimer); loadTimer = null;
       curModel = def; SYSTEMS = def.systems; DEFAULT_HIDE = def.defaultHide;
       sysByKey = Object.fromEntries([...SYSTEMS, OTHER].map(s=>[s.key,s]));
       closeSel();
       while(root.children.length){ const m=root.children[0]; root.remove(m); disposeObj(m); }
+      modelObj = null;   // 読込途中の空の表示状態を発表者から送らない
       pickables.length = 0; for(const k in bySystem) delete bySystem[k];
       loadEl.style.display='flex'; loadEl.classList.remove('fadeout'); loadT.textContent='モデル読み込み中…';
       loader.load(def.url,
         (gltf)=>{
+          if (seq !== loadSeq){ disposeObj(gltf.scene); return; }   // 古い要求の結果
           const model = gltf.scene;
           model.traverse((o)=>{
             if (!o.isMesh) return;
@@ -327,7 +333,8 @@
             const first = Array.isArray(o.material) ? o.material[0] : o.material;
             first.side = THREE.DoubleSide;
             o.userData.sys = classify(o.name);
-            if (DEFAULT_HIDE && DEFAULT_HIDE.test(o.name)) o.visible = false;
+            // 臍帯・胎盤・乳腺など。共有ルームの受信では上書きさせない（applyState）
+            if (DEFAULT_HIDE && DEFAULT_HIDE.test(o.name)){ o.userData.forceHidden = true; o.visible = false; }
             if (curModel.colorBySystem){   // Z-Anatomyは白のっぺり材質が多い→システム色で塗り分け
               const sc = (sysByKey[o.userData.sys]||OTHER).color;
               for (const m of (Array.isArray(o.material)?o.material:[o.material])){
@@ -355,15 +362,23 @@
           buildTree();
           pickables.forEach(m=>m.userData.defVis = m.visible);   // 既定の可視状態を記録（検索/リセット復帰用）
           if (pendingState){ try { applyState(pendingState); } catch(e){} }   // 読込前に届いた先生の表示状態
-          loadEl.classList.add('fadeout'); setTimeout(()=>{ loadEl.style.display='none'; }, 550);
+          if (seq !== loadSeq) return;   // pendingState が次の読み込みを開始した場合
+          loadEl.classList.add('fadeout');
+          loadTimer = setTimeout(()=>{ if (seq === loadSeq){ loadEl.style.display='none'; loadTimer = null; } }, 550);
         },
-        (ev)=>{ if (ev.total) loadT.textContent = 'モデル読み込み中… ' + Math.round(ev.loaded/ev.total*100) + '%'; },
-        (err)=>{ loadT.textContent = '読み込み失敗: ' + (err.message||err); }
+        (ev)=>{ if (seq === loadSeq && ev.total) loadT.textContent = 'モデル読み込み中… ' + Math.round(ev.loaded/ev.total*100) + '%'; },
+        (err)=>{ if (seq === loadSeq) loadT.textContent = '読み込み失敗: ' + (err.message||err); }
       );
     }
 
     // ===== システムツリー =====
     const listEl = document.getElementById('list');
+    function syncRows(){
+      for (const row of listEl.querySelectorAll('.row')){
+        const on = (bySystem[row.dataset.key] || []).some(m => m.visible);
+        row.classList.toggle('on', on); row.querySelector('.sw').textContent = on ? '✓' : '';
+      }
+    }
     function buildTree(){
       const present = SYSTEMS.filter(s => (bySystem[s.key]||[]).length);
       if ((bySystem.other||[]).length) present.push(OTHER);
@@ -371,7 +386,7 @@
       listEl.innerHTML = '';
       for (const s of present){
         const meshes = bySystem[s.key] || [];
-        const startOn = !s.off;
+        const startOn = meshes.some(m => m.visible);
         const row = document.createElement('div');
         row.className = 'row' + (startOn ? ' on' : '');
         row.dataset.key = s.key;   // 共有ルームの受信時にチェック状態を復元するため
@@ -381,15 +396,16 @@
           const on = !row.classList.contains('on');
           row.classList.toggle('on', on);
           row.querySelector('.sw').textContent = on ? '✓' : '';
-          for (const m of meshes) m.visible = on;
+          for (const m of meshes) m.visible = on && !m.userData.forceHidden;
+          syncRows();
           if (selected && !selected.visible) closeSel();
         });
         listEl.appendChild(row);
       }
     }
     function setAll(v){
-      for (const m of pickables) m.visible = v;
-      for (const row of listEl.querySelectorAll('.row')){ row.classList.toggle('on', v); row.querySelector('.sw').textContent = v?'✓':''; }
+      for (const m of pickables) m.visible = v && !m.userData.forceHidden;
+      syncRows();
       if (!v) closeSel();
     }
 
@@ -474,7 +490,7 @@
     document.getElementById('fadeBtn').addEventListener('click', () => { if (selected) fade(selected); });
     document.getElementById('isoBtn').addEventListener('click', () => {
       if (!selected) return; const only = selected;
-      for (const m of pickables) m.visible = (m === only);
+      for (const m of pickables) m.visible = (m === only) && !m.userData.forceHidden;
       for (const row of listEl.querySelectorAll('.row')){ row.classList.remove('on'); row.querySelector('.sw').textContent=''; }
     });
     document.getElementById('closeSel').addEventListener('click', closeSel);
@@ -490,7 +506,7 @@
     });
     // 既定状態へ復帰（既定非表示・既定オフ系統は隠れたまま）
     function restoreDefault(){
-      for (const m of pickables){ if(m.userData.faded) fade(m); m.visible = m.userData.defVis; }
+      for (const m of pickables){ if(m.userData.faded) fade(m); m.visible = m.userData.defVis && !m.userData.forceHidden; }
       buildTree();
     }
     // 構造検索（日本語/英語）: 一致した構造だけ表示。空欄で既定へ復帰。
@@ -501,7 +517,7 @@
       let n=0;
       for (const m of pickables){
         const hit = humanize(m.name).toLowerCase().includes(q) || (jpName(m.name)||'').includes(q) || m.name.toLowerCase().includes(q);
-        m.visible = hit; if (hit) n++;
+        m.visible = hit && !m.userData.forceHidden; if (m.visible) n++;
       }
       searchCount.textContent = n + '件';
     });
@@ -931,6 +947,7 @@
     let room = null, follower = false, wantPose = null, ptrLocal = null;
     let lastSent = 0, lastJson = '', lastPoseSent = 0;
     let poseRecv = 0, lastConn = '';   // 診断用：先生から受け取った視点の回数・接続状態
+    let noTeacherModel = false;   // 非対応標本の受信中も女性標本を維持する
     const shareEl = document.getElementById('share'), pill = document.getElementById('pill');
     const shareSt = document.getElementById('shareSt'), pillT = document.getElementById('pillT');
     const roomCode = document.getElementById('roomCode'), shareHint = document.getElementById('shareHint');
@@ -969,7 +986,7 @@
     function updateArStat(){
       if (!arMode){ return; }
       const conn = !room ? '未接続'
-        : ({ connecting:'接続中', reconnecting:'再接続', open:'接続', closed:'切断' }[lastConn] || '—');
+        : ({ connecting:'接続中', reconnecting:'再接続', open:'接続', closed:'切断', waiting:'先生待ち', rejected:'入室不可' }[lastConn] || '—');
       const role = !room ? '—' : (room.isPresenter() ? '先生(操作)' : (follower ? '参加(同期)' : '自由'));
       arStatEl.textContent = `${BUILD} ・ 共有:${conn} ・ 役割:${role} ・ 受信:${poseRecv} ・ 動き:${motionOK ? 'OK' : '—'}`;
     }
@@ -977,22 +994,36 @@
     function updateShareQR(){
       const c = (roomCode.value || '').toUpperCase().trim();
       const base = location.origin + location.pathname;
-      const stURL = base + '?room=' + c + '&role=f';
+      const stURL = base + '?room=' + encodeURIComponent(c) + '&role=f';
       shareQRwrap.classList.toggle('show', c === CLASS_ROOM);
-      shareHint.innerHTML = '参加者用URL:<br><code style="word-break:break-all">' + stURL + '</code>' +
-        (c === CLASS_ROOM ? '' : '<br><span style="color:#93a0c0">※このルーム番号のQRは配布ツールで発行してください</span>');
+      // 部屋番号は URL の ?room= から来る。innerHTML に混ぜるとそのままタグとして実行されるので、
+      //   文字として入れる（textContent）。
+      const code = document.createElement('code'); code.style.wordBreak = 'break-all'; code.textContent = stURL;
+      shareHint.replaceChildren('参加者用URL:', document.createElement('br'), code);
+      if (c !== CLASS_ROOM){
+        const note = document.createElement('span'); note.style.color = '#93a0c0';
+        note.textContent = '※このルーム番号のQRは配布ツールで発行してください';
+        shareHint.append(document.createElement('br'), note);
+      }
+      if (noTeacherModel){
+        const note = document.createElement('span');
+        note.textContent = '先生の標本はWeb版にありません。女性標本の表示を維持しています。';
+        shareHint.append(document.createElement('br'), note);
+      }
     }
 
     function setStatus(s){
       lastConn = s;
       const map = { connecting:['#f2c14b','接続中…'], reconnecting:['#f2c14b','再接続中…'],
-                    open:['#3ddc84','接続'], closed:['#e0524d','切断'] };
+                    open:['#3ddc84','接続'], closed:['#e0524d','切断'],
+                    waiting:['#f2c14b','先生の開始待ち…'],          // 中継 4404：先生がまだ部屋を開いていない（20秒ごとに再試行）
+                    rejected:['#e0524d','入室できません'] };        // 中継 4400/4401：部屋番号が不正・ライセンス無効（再試行しない）
       const [c, t] = map[s] || ['#93a0c0','—'];
       shareSt.textContent = t;
       pill.classList.add('show');
       pill.querySelector('.d').style.background = c;
-      const rt = !room ? '' : room.isPresenter() ? '（操作中）' : '（同期中）';
-      pillT.textContent = t + rt;
+      const rt = (!room || s === 'waiting' || s === 'rejected') ? '' : room.isPresenter() ? '（操作中）' : '（同期中）';
+      pillT.textContent = t + rt + (noTeacherModel ? '・先生の標本はWeb版にありません' : '');
     }
     function setFollower(v){
       follower = v;
@@ -1006,15 +1037,26 @@
     }
     function join(code, asPresenter){
       if (!RP.url){ shareHint.textContent = '中継サーバ未設定です。sync/config.js の SYNC_URL を設定するか、URLに ?sync=ws://… を付けてください。'; return; }
-      if (room) room.close();
       const c = (code || '').toUpperCase().trim(); if (!c) return;
+      if (room) room.close();
+      pendingState = null; wantPose = null; noTeacherModel = false; setFollower(false);
+      lastStateHash = null;
       roomCode.value = c;
       room = createRoom({
         url: RP.url, room: c,
         onStatus: setStatus,
-        // 誰も操作権を持っていない間は全員が自由に動かせる（1台だけで入室したときに固まらない）。
-        // 先に動かした人が中継側で自動的に操作権を得る。
-        onRole: (isP, pid) => { setFollower(!!pid && !isP); setStatus(room && room.isConnected() ? 'open' : 'connecting'); },
+        // 中継に断られた理由を黙って捨てない。not-teacher＝ライセンスの無いWeb版が「先生として開始」した。
+        onError: (code) => {
+          const t = code === 'not-teacher' ? 'この端末は先生になれません（先生役はiPadアプリです。学生として同期します）'
+                                           : '中継からのエラー: ' + code;
+          shareHint.textContent = t; pillT.textContent = t; pill.classList.add('show');
+        },
+        // 誰も操作権を持っていない間は全員が手元で自由に動かせる（1台だけで入室したときに固まらない）。
+        // ただし送信はしない（room.js が発表者のときだけ送る）。
+        onRole: (isP, pid) => {
+          if (isP){ lastStateHash = null; pendingState = null; noTeacherModel = false; updateShareQR(); }
+          setFollower(!!pid && !isP); setStatus(room && room.isConnected() ? 'open' : 'connecting');
+        },
         onPose: (d) => { wantPose = d; poseRecv++; },   // 受信数は同期が届いているかの証拠
         onState: (d) => { try { applyState(d); } catch(e){} },
       });
@@ -1042,9 +1084,9 @@
     }, true);
     document.getElementById('leaveBtn').addEventListener('click', () => {
       if (room){ room.close(); room = null; }
+      pendingState = null; noTeacherModel = false;
       setFollower(false); wantPose = null; pill.classList.remove('show'); shareEl.classList.remove('show');
     });
-    if (RP.enabled && RP.room) join(RP.room);   // QR等からの自動入室
 
     // 表示状態は「今かくれている構造の名前一覧」をそのまま送る。
     // 分類器を各ページに複製せずに済み、送り手と受け手で解釈がズレようがない。
@@ -1055,18 +1097,35 @@
       for (const m of pickables) h = (h*31 + (m.visible ? 1 : 0)) | 0;
       return (h*31 + (selected ? selected.id : 0)) | 0;
     }
+    // iPad は hid の先頭に標本札を送る。このページで対応する標本は女性のみ。
+    const MODEL_TAG = 'model:';
+    if (RP.enabled && RP.room) join(RP.room);   // 同期状態の初期化後に自動入室
     function applyState(st){
+      if (!st || typeof st !== 'object' || Array.isArray(st)) return;
       // 入室直後はまだGLB読込中で pickables が空。ここで捨てると先生の表示状態を
       // 受け取れないまま既定の姿を見続けることになるので、保持して読込後に適用する。
       pendingState = st;
+      const list = (Array.isArray(st.hid) ? st.hid : []).filter(h => typeof h === 'string');
+      const tag = list.find(h => h.startsWith(MODEL_TAG));
+      const names = list.filter(h => !h.startsWith(MODEL_TAG));
+      // 先生の標本：Web版どうしは st.model、iPad は hid の札。女性以外は受け付けない。
+      const fromWeb = typeof st.model === 'string' && st.model !== '';
+      const tid = tag ? tag.slice(MODEL_TAG.length) : '';
+      const wantKey = (fromWeb ? st.model : tid) === 'female' ? 'female' : null;
+      const miss = (fromWeb || !!tag) && !wantKey;
+      if (miss !== noTeacherModel){ noTeacherModel = miss; setStatus(lastConn); updateShareQR(); }
+      if (miss) return;   // 別標本の構造名で現在の表示・選択を変更しない
       if (!pickables.length) return;
-      const hid = new Set(st.hid || []);
-      for (const m of pickables) m.visible = !hid.has(m.name);
-      for (const row of listEl.querySelectorAll('.row')){
-        const on = (bySystem[row.dataset.key] || []).some(m => m.visible);
-        row.classList.toggle('on', on); row.querySelector('.sw').textContent = on ? '✓' : '';
+      // 表示の切り替えは「同じ標本の構造名の一覧」が届いたときだけ当てる。
+      //   iPad は hid に札しか入れない（表示状態を送らない）。それを「何も隠していない」と読むと、
+      //   既定で隠している筋・表面領域まで全部出てしまうので、手元の表示をそのまま保つ。
+      const hasVis = fromWeb ? st.model === curModel.key : names.length > 0;
+      if (hasVis){
+        const hid = new Set(names);
+        for (const m of pickables) m.visible = !m.userData.forceHidden && !hid.has(m.name);   // 臍帯・胎盤・乳腺は常に隠す
+        syncRows();
       }
-      const want = st.sel ? pickables.find(m => m.name === st.sel) : null;
+      const want = st.sel ? pickables.find(m => m.name === st.sel && !m.userData.forceHidden) : null;
       if (want !== selected){ if (want) select(want); else closeSel(); }
     }
 
@@ -1087,12 +1146,15 @@
         else if (arMode) VS.applyTurntable({ root, camWorld: camera.position, applyScale:false }, wantPose, 0.2);
         else VS.applyOrbit({ camera, controls, model:modelObj, centerWorld, radiusWorld }, wantPose, 0.25);
         showPointer(wantPose.p || null);
-      } else {   // 操作権を持っている、または誰も持っていない（=自由操作）。後者は最初の送信で操作権を得る。
+      } else {   // 発表者不在では手元の自由操作だけを許可し、送信しない。
+        if (!room.isPresenter()) return;
         const now = performance.now();
         const h = stateHash();
         if (h !== lastStateHash && now - lastStateSent >= 250){   // 表示状態は最大4Hz
           lastStateHash = h; lastStateSent = now;
-          room.sendState({ hid: pickables.filter(m => !m.visible).map(m => m.name),
+          // Web版用の model と、iPad/HL2 用の標本札を両方送る。
+          room.sendState({ model: 'female',
+                           hid: ['model:female', ...pickables.filter(m => !m.visible).map(m => m.name)],
                            sel: selected ? selected.name : null });
         }
         if (now - lastSent < 83) return;   // 視点は12Hz。受信側で補間するのでこれで滑らかに見える

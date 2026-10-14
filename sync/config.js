@@ -2,6 +2,8 @@
 //
 // 空文字のあいだ同期機能は完全に無効（既存のビューアは何も変わらず動く）。
 // URLに ?sync=ws://localhost:8787 を付けると一時的に上書きできる（ローカル検証用）。
+// ?relay=<サブドメイン> を付けると wss://anatomy-relay.<サブドメイン>.workers.dev を使う
+//   （中継のサブドメインが変わっても、QRを刷り直すだけで追従できるようにするため）。
 // 中継サーバ（Cloudflare Workers）。worker/ を wrangler deploy して発行する。
 //
 // 学校アカウント(info@snm.ac.jp)の中継。2026-09-11 に個人アカウント側から戻した。
@@ -20,7 +22,10 @@ export const SYNC_URL = 'wss://anatomy-sync.restless-dew-5467.workers.dev';
 // 上書き込みの解決とルーム設定の読み取りを1か所に集約する。
 export function readRoomParams() {
   const q = new URLSearchParams(location.search);
-  const url = q.get('sync') || SYNC_URL;
+  // relay は URL に埋め込むので、DNSラベルとして安全な形（英小文字・数字・ハイフン、63文字まで）だけ通す
+  const relay = q.get('relay') || '';
+  const relayUrl = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(relay) ? 'wss://anatomy-relay.' + relay + '.workers.dev' : '';
+  const url = q.get('sync') || relayUrl || SYNC_URL;
   const room = (q.get('room') || '').trim();
   const roleParam = (q.get('role') || '').trim().toLowerCase();
   const role = roleParam.startsWith('p') ? 'presenter' : roleParam.startsWith('f') ? 'follower' : '';

@@ -7,7 +7,7 @@
 //    25秒ごとのpingと指数バックオフ再接続を前提にする。
 //
 // 使い方:
-//   const room = createRoom({ url, room:'AB12CD', onStatus, onPose, onState, onRole });
+//   const room = createRoom({ url, room:'AB12CD', onStatus, onPose, onState, onRole, onError });
 //   room.claim();               // 操作権を取る
 //   room.sendPose({...});       // 発表者のみ（中継側でも発表者以外は捨てる）
 
@@ -16,7 +16,7 @@ const BACKOFF = [500, 1000, 2000, 4000, 8000, 15000];
 const WAIT_OPEN_MS = 20000;   // 教員が部屋を開くのを待つ間の再試行間隔
 
 export function createRoom(opts) {
-  const { url, room, onStatus, onPose, onState, onRole } = opts;
+  const { url, room, onStatus, onPose, onState, onRole, onError } = opts;
   let ws = null;
   let myId = null;
   let presenterId = null;
@@ -30,6 +30,7 @@ export function createRoom(opts) {
 
   function connect() {
     if (closed) return;
+    myId = null; presenterId = null;
     clearTimeout(reconnectTimer);
     status(attempt === 0 ? 'connecting' : 'reconnecting');
 
@@ -37,6 +38,7 @@ export function createRoom(opts) {
     try { ws = new WebSocket(u); } catch (e) { scheduleReconnect(); return; }
 
     ws.onopen = () => {
+      if (closed) return;
       attempt = 0;
       status('open');
       clearInterval(pingTimer);
@@ -45,7 +47,9 @@ export function createRoom(opts) {
     };
 
     ws.onmessage = (ev) => {
+      if (closed) return;
       let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (!m || typeof m !== 'object' || Array.isArray(m)) return;
       if (m.k === 'hello') {
         myId = m.id; presenterId = m.presenter || null;
         try { onRole && onRole(isPresenter(), presenterId); } catch {}
@@ -56,6 +60,12 @@ export function createRoom(opts) {
         if (!isPresenter()) { try { onPose && onPose(m.d); } catch {} }
       } else if (m.k === 'state') {
         if (!isPresenter()) { try { onState && onState(m.d); } catch {} }
+      } else if (m.k === 'error') {
+        // 中継が断った理由（worker.js）。not-teacher＝ライセンスの無い端末が操作権を求めた。
+        //   何度求めても通らないので、再接続のたびに claim を送り直すのをやめる。
+        const code = typeof m.code === 'string' ? m.code : 'unknown';
+        if (code === 'not-teacher' || code === 'bad-license') wantClaim = false;
+        try { onError && onError(code); } catch {}
       }
     };
 
@@ -64,6 +74,9 @@ export function createRoom(opts) {
     //   → 何度やっても通らないので止める（止めないと全端末が叩き続ける）。
     ws.onclose = (ev) => {
       clearInterval(pingTimer);
+      myId = null; presenterId = null;
+      if (closed) return;
+      try { onRole && onRole(false, null); } catch {}
       const code = ev && ev.code;
       if (code === 4404) { status('waiting'); reconnectTimer = setTimeout(connect, WAIT_OPEN_MS); return; }
       if (code >= 4400 && code < 4500) { closed = true; status('rejected', String(code)); return; }
@@ -80,8 +93,8 @@ export function createRoom(opts) {
     reconnectTimer = setTimeout(connect, wait);
   }
 
-  const isPresenter = () => !!myId && presenterId === myId;
-  const live = () => ws && ws.readyState === 1;
+  const isPresenter = () => live() && !!myId && presenterId === myId;
+  const live = () => !closed && !!ws && ws.readyState === 1;
   const send = (o) => { if (live()) { try { ws.send(JSON.stringify(o)); } catch {} } };
 
   connect();
@@ -93,8 +106,10 @@ export function createRoom(opts) {
     isConnected: live,
     claim() { wantClaim = true; send({ k: 'claim' }); },
     release() { wantClaim = false; },
-    sendPose(d) { if (isPresenter() || presenterId === null) send({ k: 'pose', d }); },
-    sendState(d) { if (isPresenter() || presenterId === null) send({ k: 'state', d }); },
-    close() { closed = true; clearInterval(pingTimer); clearTimeout(reconnectTimer); try { ws && ws.close(); } catch {} },
+    // 送るのは自分が発表者のときだけ。発表者不在(null)でも送ると、先生が切れた瞬間に
+    //   部屋の全端末が毎秒12通を送り始める（中継は発表者以外を捨てるので全部無駄になる）。
+    sendPose(d) { if (isPresenter()) send({ k: 'pose', d }); },
+    sendState(d) { if (isPresenter()) send({ k: 'state', d }); },
+    close() { closed = true; myId = null; presenterId = null; clearInterval(pingTimer); clearTimeout(reconnectTimer); try { ws && ws.close(); } catch {} },
   };
 }

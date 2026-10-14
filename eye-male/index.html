@@ -26,7 +26,10 @@
   </script>
   <script type="module">
     const logEl=document.getElementById('log'), btn=document.getElementById('btn');
-    const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);try{fetch('beacon?m='+encodeURIComponent('eyem:'+m),{cache:'no-store'});}catch(e){}};
+    // 診断は ?diag=1 を付けたときだけ。beacon は GitHub Pages に受け口が無い（開発用サーバ専用）。
+    //   .catch を外すと、送信失敗 → unhandledrejection → log → また送信、で止まらなくなる。
+    const DIAG=new URLSearchParams(location.search).get('diag')==='1';
+    const log=(m)=>{logEl.textContent+="\n"+m;console.log(m);if(DIAG){try{fetch('beacon?m='+encodeURIComponent('eyem:'+m),{cache:'no-store'}).catch(()=>{});}catch(e){}}};
     log("boot "+navigator.userAgent.slice(0,50));
     addEventListener('error', e=>log('JSERR: '+(e.message||e)));
     addEventListener('unhandledrejection', e=>log('REJECT: '+(e.reason&&e.reason.message?e.reason.message:e.reason)));
